@@ -8,6 +8,7 @@ from collections import deque
 from pathlib import Path
 from typing import Deque, Optional, Tuple
 import cv2
+from ament_index_python.packages import get_package_share_directory
 
 import clip
 import numpy as np
@@ -33,12 +34,14 @@ class OmniVLANavigationNode(Node):
         self,
         nav_config_path: Path,
         preprocess_config_path: Path,
+        package_share_dir: Path,
     ) -> None:
         super().__init__("navigation")
 
         self.autonomous_flag = False
         self.context_queue = []
         self.obs_image = None
+        self.package_share_dir = package_share_dir
 
         self.nav_cfg = load_yaml(nav_config_path)
         self.preprocess_cfg = load_yaml(preprocess_config_path)
@@ -90,13 +93,18 @@ class OmniVLANavigationNode(Node):
         self.clip_size = (clip_size[0], clip_size[1])
 
         use_mask = self.preprocess_cfg.get("use_mask", False)
-        mask_path = self.preprocess_cfg.get("mask_path", "")
+        raw_mask_path = str(self.preprocess_cfg.get("mask_path", ""))
+        if raw_mask_path:
+            mask_path_obj = self.package_share_dir / Path(raw_mask_path)
+            mask_path = str(mask_path_obj)
+        else:
+            mask_path = ""
 
         self.mask_obs = build_mask(self.obs_size, use_mask, mask_path)
         self.mask_goal = build_mask(self.goal_size, use_mask, mask_path)
         self.mask_clip = build_mask(self.clip_size, use_mask, mask_path)
 
-        weights_path = Path(self.nav_cfg.get("weights_path", ""))
+        weights_path = self.package_share_dir / Path(str(self.nav_cfg.get("weights_path", "")))
         if not weights_path.exists():
             raise FileNotFoundError(f"Model weights not found: {weights_path}")
 
@@ -120,7 +128,9 @@ class OmniVLANavigationNode(Node):
 
     def init_model_modality(self) -> None:
         if self.use_goal_image:
-            goal_image_path = Path(str(self.nav_cfg.get("goal_image_path", "OmniVLA/inference/goal_img.jpg")))
+            goal_image_path = self.package_share_dir / Path(
+                str(self.nav_cfg.get("goal_image_path", "OmniVLA/inference/goal_img.jpg"))
+            )
             goal_pil = PILImage.open(goal_image_path).convert("RGB").resize(self.goal_size)
         else:
             goal_pil = PILImage.new("RGB", self.goal_size, color=(0, 0, 0))
@@ -240,9 +250,33 @@ class OmniVLANavigationNode(Node):
             linear_vel = dx / dt
             angular_vel = math.atan(dy / dx) / dt
 
-        linear_vel = float(np.clip(linear_vel, 0.0, self.linear_max_vel))
-        angular_vel = float(np.clip(angular_vel, -self.angular_max_vel, self.angular_max_vel))
-        return waypoints, linear_vel, angular_vel
+        linear_vel = float(np.clip(linear_vel, 0.0, 0.5))
+        angular_vel = float(np.clip(angular_vel, -1.0, 1.0))
+
+        maxv = float(self.linear_max_vel)
+        maxw = float(self.angular_max_vel)
+        if abs(linear_vel) <= maxv:
+            if abs(angular_vel) <= maxw:
+                linear_vel_limit = linear_vel
+                angular_vel_limit = angular_vel
+            else:
+                rd = linear_vel / angular_vel
+                linear_vel_limit = maxw * math.copysign(1.0, linear_vel) * abs(rd)
+                angular_vel_limit = maxw * math.copysign(1.0, angular_vel)
+        else:
+            if abs(angular_vel) <= 0.001:
+                linear_vel_limit = maxv * math.copysign(1.0, linear_vel)
+                angular_vel_limit = 0.0
+            else:
+                rd = linear_vel / angular_vel
+                if abs(rd) >= maxv / maxw:
+                    linear_vel_limit = maxv * math.copysign(1.0, linear_vel)
+                    angular_vel_limit = maxv * math.copysign(1.0, angular_vel) / abs(rd)
+                else:
+                    linear_vel_limit = maxw * math.copysign(1.0, linear_vel) * abs(rd)
+                    angular_vel_limit = maxw * math.copysign(1.0, angular_vel)
+
+        return waypoints, float(linear_vel_limit), float(angular_vel_limit)
 
     @staticmethod
     def clip_angle(angle: float) -> float:
@@ -254,12 +288,12 @@ class OmniVLANavigationNode(Node):
 
 
 def main() -> int:
-    repo_root = Path(__file__).resolve().parents[2]
-    nav_config_path = (repo_root / "deployment" / "config" / "nav.yaml").resolve()
-    preprocess_config_path = (repo_root / "deployment" / "config" / "preprocess.yaml").resolve()
+    package_share_dir = Path(get_package_share_directory("navvla"))
+    nav_config_path = package_share_dir / "config" / "nav.yaml"
+    preprocess_config_path = package_share_dir / "config" / "preprocess.yaml"
 
     rclpy.init()
-    node = OmniVLANavigationNode(nav_config_path, preprocess_config_path)
+    node = OmniVLANavigationNode(nav_config_path, preprocess_config_path, package_share_dir)
     try:
         rclpy.spin(node)
     finally:
