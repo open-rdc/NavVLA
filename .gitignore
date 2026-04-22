@@ -3,8 +3,7 @@
 /log
 
 /docs
-/weights/omnivla*
-
 __pycache__
 
 .codex
+training/weights/*.pth
