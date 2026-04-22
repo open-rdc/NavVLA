@@ -1,0 +1,3 @@
+[submodule "OmniVLA"]
+	path = OmniVLA
+	url = https://github.com/open-rdc/OmniVLA.git
