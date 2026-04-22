@@ -8,10 +8,17 @@ linear_max_vel: 0.3
 angular_max_vel: 0.3
 close_threshold: 1.0
 
-use_goal_pose: true
-use_goal_image_8: true
-use_lan_prompt: true
 modality_id: 3
+# modality flags (pose/image/language) are derived automatically from modality_id
+# 0: satellite only
+# 1: pose and satellite
+# 2: satellite and image
+# 3: all
+# 4: pose only
+# 5: pose and image
+# 6: image only
+# 7: language only
+# 8: language and pose
 
 # Optional inference settings
 waypoint_select: 4
