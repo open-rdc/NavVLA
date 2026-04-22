@@ -1,0 +1,24 @@
+weights_path: deployment/weights/omnivla-edge.pth
+model_type: omnivla-edge
+context_size: 5
+len_traj_pred: 8
+
+interval_ms: 100
+linear_max_vel: 0.3
+angular_max_vel: 0.3
+close_threshold: 1.0
+
+use_goal_pose: true
+use_goal_image_8: true
+use_lan_prompt: true
+modality_id: 3
+
+# Optional inference settings
+waypoint_select: 4
+metric_waypoint_spacing: 0.1
+goal_pose: [10.0, -1.0, 0.0, -1.0]
+goal_image_path: OmniVLA/inference/goal_img.jpg
+lan_prompt: blue trash bin
+path_frame_id: base_link
+
+topomap_dir: topomap
