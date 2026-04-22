@@ -19,7 +19,7 @@ from OmniVLA.inference.utils_policy import (
     transform_images_PIL_mask,
     transform_images_map,
 )
-from .preprocess import build_mask, ensure_image_size, ensure_normalize_mean, load_yaml
+from .preprocess import build_mask, load_yaml
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
@@ -44,145 +44,137 @@ class OmniVLANavigationNode(Node):
         if not self.omnivla_root.exists():
             raise FileNotFoundError(f"OmniVLA submodule not found: {self.omnivla_root}")
 
+        self.autonomous_flag = False
+        self.context_size = None
+        self.context_queue = []
+
         self.nav_cfg = load_yaml(nav_config_path)
         self.preprocess_cfg = load_yaml(preprocess_config_path)
 
-        self.use_goal_pose = bool(self.nav_cfg.get("use_goal_pose", True))
-        self.use_goal_image_8 = bool(self.nav_cfg.get("use_goal_image_8", True))
-        self.use_lan_prompt = bool(self.nav_cfg.get("use_lan_prompt", True))
-
-        self.context_size = int(self.nav_cfg.get("context_size", 5))
-        self.waypoint_spacing = float(self.nav_cfg.get("metric_waypoint_spacing", 0.1))
-        self.waypoint_select = int(self.nav_cfg.get("waypoint_select", 4))
-        self.linear_max_vel = float(self.nav_cfg.get("linear_max_vel", 0.3))
-        self.angular_max_vel = float(self.nav_cfg.get("angular_max_vel", 0.3))
-        self.path_frame_id = str(self.nav_cfg.get("path_frame_id", "base_link"))
-        self.modality_id = int(self.nav_cfg.get("modality_id", 3))
-
-        self.interval_ms = int(self.nav_cfg.get("interval_ms", 100))
-        self.autonomous_enabled = False
-        self.last_cmd_active = False
-
-        self.latest_image: Optional[PILImage.Image] = None
-        self.context_queue: Deque[PILImage.Image] = deque(maxlen=self.context_size + 1)
-
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        self._setup_inference_components()
+        self.init_params()
+        self.init_model()
+        self.init_model_modality()
 
         self.image_sub = self.create_subscription(Image, "/image_raw", self.image_callback, 10)
-        self.autonomous_sub = self.create_subscription(
-            Bool, "/autonomous", self.autonomous_callback, 10
-        )
+        self.autonomous_sub = self.create_subscription(Bool, "/autonomous", self.autonomous_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.path_pub = self.create_publisher(NavPath, "/path", 10)
 
         self.timer = self.create_timer(self.interval_ms / 1000.0, self.timer_callback)
         self.get_logger().info("navigation.py node started")
 
-    def _setup_inference_components(self) -> None:
-        mean = ensure_normalize_mean(self.preprocess_cfg.get("normalize_mean", [0.485, 0.456, 0.406]))
-        self.get_logger().info(
-            f"Using normalize_mean={mean}. normalize_std is fixed in OmniVLA implementation."
-        )
+    def init_params(self) -> None:
+        self.context_size = self.nav_cfg.get("context_size", 5)
+        self.waypoint_spacing = self.nav_cfg.get("metric_waypoint_spacing", 0.1)
+        self.waypoint_select = self.nav_cfg.get("waypoint_select", 4)
+        self.linear_max_vel = self.nav_cfg.get("linear_max_vel", 0.3)
+        self.angular_max_vel = self.nav_cfg.get("angular_max_vel", 0.3)
+        self.path_frame_id = self.nav_cfg.get("path_frame_id", "base_link")
+        self.modality_id = self.nav_cfg.get("modality_id", 3)
+        self.interval_ms = self.nav_cfg.get("interval_ms", 100)
 
-        self.obs_size = ensure_image_size(self.preprocess_cfg.get("obs_image_size"), "obs_image_size")
-        self.goal_size = ensure_image_size(
-            self.preprocess_cfg.get("goal_image_size"), "goal_image_size"
-        )
-        self.clip_size = ensure_image_size(
-            self.preprocess_cfg.get("clip_image_size"), "clip_image_size"
-        )
+        modality_to_flags = {
+            0: (False, False, False),  # satellite only
+            1: (True, False, False),   # pose + satellite
+            2: (False, True, False),   # image + satellite
+            3: (True, True, True),     # all
+            4: (True, False, False),   # pose only
+            5: (True, True, False),    # pose + image
+            6: (False, True, False),   # image only
+            7: (False, False, True),   # language only
+            8: (True, False, True),    # language + pose
+        }
+        self.use_goal_pose, self.use_goal_image, self.use_prompt = modality_to_flags[self.modality_id]
 
-        use_mask = bool(self.preprocess_cfg.get("use_mask", False))
-        mask_path_value = str(self.preprocess_cfg.get("mask_path", ""))
-        if use_mask and mask_path_value:
-            mask_path = Path(mask_path_value)
-            if not mask_path.is_absolute():
-                mask_path = (self.repo_root / mask_path).resolve()
-            mask_path_value = str(mask_path)
+    def init_model(self) -> None:
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-        self.mask_obs = build_mask(self.obs_size, use_mask, mask_path_value)
-        self.mask_goal = build_mask(self.goal_size, use_mask, mask_path_value)
-        self.mask_clip = build_mask(self.clip_size, use_mask, mask_path_value)
+        obs_size = self.preprocess_cfg.get("obs_image_size", [96, 96])
+        goal_size = self.preprocess_cfg.get("goal_image_size", [96, 96])
+        clip_size = self.preprocess_cfg.get("clip_image_size", [224, 224])
 
-        weights_path = Path(str(self.nav_cfg.get("weights_path", "")))
-        if not weights_path.is_absolute():
-            weights_path = (self.repo_root / weights_path).resolve()
+        self.obs_size = (obs_size[0], obs_size[1])
+        self.goal_size = (goal_size[0], goal_size[1])
+        self.clip_size = (clip_size[0], clip_size[1])
+
+        use_mask = self.preprocess_cfg.get("use_mask", False)
+        mask_path = self.preprocess_cfg.get("mask_path", "")
+
+        self.mask_obs = build_mask(self.obs_size, use_mask, mask_path)
+        self.mask_goal = build_mask(self.goal_size, use_mask, mask_path)
+        self.mask_clip = build_mask(self.clip_size, use_mask, mask_path)
+
+        weights_path = Path(self.nav_cfg.get("weights_path", ""))
         if not weights_path.exists():
             raise FileNotFoundError(f"Model weights not found: {weights_path}")
 
         model_params = {
-            "model_type": str(self.nav_cfg.get("model_type", "omnivla-edge")),
-            "len_traj_pred": int(self.nav_cfg.get("len_traj_pred", 8)),
-            "learn_angle": bool(self.nav_cfg.get("learn_angle", True)),
+            "model_type": self.nav_cfg.get("model_type", "omnivla-edge"),
+            "len_traj_pred": self.nav_cfg.get("len_traj_pred", 8),
+            "learn_angle": self.nav_cfg.get("learn_angle", True),
             "context_size": self.context_size,
-            "obs_encoder": str(self.nav_cfg.get("obs_encoder", "efficientnet-b0")),
-            "obs_encoding_size": int(self.nav_cfg.get("obs_encoding_size", 1024)),
-            "late_fusion": bool(self.nav_cfg.get("late_fusion", False)),
-            "mha_num_attention_heads": int(self.nav_cfg.get("mha_num_attention_heads", 4)),
-            "mha_num_attention_layers": int(self.nav_cfg.get("mha_num_attention_layers", 4)),
-            "mha_ff_dim_factor": int(self.nav_cfg.get("mha_ff_dim_factor", 4)),
-            "clip_type": str(self.preprocess_cfg.get("clip_model", "ViT-B/32")),
+            "obs_encoder": self.nav_cfg.get("obs_encoder", "efficientnet-b0"),
+            "obs_encoding_size": self.nav_cfg.get("obs_encoding_size", 1024),
+            "late_fusion": self.nav_cfg.get("late_fusion", False),
+            "mha_num_attention_heads": self.nav_cfg.get("mha_num_attention_heads", 4),
+            "mha_num_attention_layers": self.nav_cfg.get("mha_num_attention_layers", 4),
+            "mha_ff_dim_factor": self.nav_cfg.get("mha_ff_dim_factor", 4),
+            "clip_type": self.preprocess_cfg.get("clip_model", "ViT-B/32"),
         }
 
         self.model, self.text_encoder, _ = load_model(str(weights_path), model_params, self.device)
         self.model = self.model.to(self.device).eval()
         self.text_encoder = self.text_encoder.to(self.device).eval()
 
-        if self.use_goal_image_8:
+    def init_model_modality(self) -> None:
+        if self.use_goal_image:
             goal_image_path = Path(str(self.nav_cfg.get("goal_image_path", "OmniVLA/inference/goal_img.jpg")))
-            if not goal_image_path.is_absolute():
-                goal_image_path = (self.repo_root / goal_image_path).resolve()
-            if not goal_image_path.exists():
-                raise FileNotFoundError(f"Goal image not found: {goal_image_path}")
             goal_pil = PILImage.open(goal_image_path).convert("RGB").resize(self.goal_size)
         else:
             goal_pil = PILImage.new("RGB", self.goal_size, color=(0, 0, 0))
 
-        self.goal_image_tensor = transform_images_PIL_mask(goal_pil, self.mask_goal).to(self.device)
-
         if self.use_goal_pose:
             raw_goal_pose = self.nav_cfg.get("goal_pose", [0.0, 0.0, 1.0, 0.0])
-            if not isinstance(raw_goal_pose, list) or len(raw_goal_pose) != 4:
-                raise ValueError("goal_pose must be [x, y, cos, sin]")
             goal_pose = [float(v) for v in raw_goal_pose]
         else:
             goal_pose = [0.0, 0.0, 1.0, 0.0]
 
-        self.goal_pose_tensor = torch.tensor([goal_pose], dtype=torch.float32, device=self.device)
-        self.modality_tensor = torch.tensor([self.modality_id], dtype=torch.long, device=self.device)
-
-        prompt = str(self.nav_cfg.get("lan_prompt", "xxxx")) if self.use_lan_prompt else "xxxx"
+        if self.use_prompt:
+            prompt = str(self.nav_cfg.get("lan_prompt", "xxxx"))
+        else:
+            prompt ="xxxx"
         token = clip.tokenize(prompt, truncate=True).to(self.device)
         with torch.no_grad():
             self.feat_text = self.text_encoder.encode_text(token)
 
-        self.satellite_cur = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
+        self.satellite_current = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
         self.satellite_goal = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
 
+        self.goal_image_tensor = transform_images_PIL_mask(goal_pil, self.mask_goal).to(self.device)
+        self.goal_pose_tensor = torch.tensor([goal_pose], dtype=torch.float32, device=self.device)
+        self.modality_tensor = torch.tensor([self.modality_id], dtype=torch.long, device=self.device)
+        
+
     def autonomous_callback(self, msg: Bool) -> None:
-        self.autonomous_enabled = bool(msg.data)
+        self.autonomous_flag = bool(msg.data)
 
     def image_callback(self, msg: Image) -> None:
         try:
-            self.latest_image = self._ros_image_to_pil(msg)
+            channels = 3
+            raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
+            rgb = raw[:, : msg.width * channels].reshape(msg.height, msg.width, channels)
+            self.latest_image = PILImage.fromarray(rgb.astype(np.uint8), mode="RGB")
         except Exception as exc:
             self.get_logger().warning(f"Failed to decode /image_raw: {exc}")
 
     def timer_callback(self) -> None:
-        if not self.autonomous_enabled:
-            self._publish_zero_twist()
-            return
-
-        if self.latest_image is None:
+        if not self.autonomous_flag or self.latest_image is None:
             return
 
         try:
             linear_vel, angular_vel, waypoints = self._infer(self.latest_image)
         except Exception as exc:
             self.get_logger().warning(f"Inference failed: {exc}")
-            self._publish_zero_twist()
             return
 
         twist = Twist()
@@ -192,14 +184,7 @@ class OmniVLANavigationNode(Node):
 
         path_msg = self._build_path_msg(waypoints)
         self.path_pub.publish(path_msg)
-        self.last_cmd_active = True
 
-    def _publish_zero_twist(self) -> None:
-        if not self.last_cmd_active:
-            return
-        stop = Twist()
-        self.cmd_pub.publish(stop)
-        self.last_cmd_active = False
 
     def _infer(self, current_image: PILImage.Image) -> Tuple[float, float, np.ndarray]:
         obs_image = current_image.resize(self.obs_size)
@@ -220,7 +205,7 @@ class OmniVLANavigationNode(Node):
 
         map_images = torch.cat(
             (
-                transform_images_map(self.satellite_cur).to(self.device),
+                transform_images_map(self.satellite_current).to(self.device),
                 transform_images_map(self.satellite_goal).to(self.device),
                 obs_image_cur,
             ),
@@ -293,28 +278,6 @@ class OmniVLANavigationNode(Node):
             msg.poses.append(pose)
 
         return msg
-
-    @staticmethod
-    def _ros_image_to_pil(msg: Image) -> PILImage.Image:
-        if msg.height == 0 or msg.width == 0:
-            raise ValueError("Received empty image")
-
-        if msg.encoding not in ("rgb8", "bgr8", "mono8"):
-            raise ValueError(f"Unsupported encoding: {msg.encoding}")
-
-        if msg.encoding == "mono8":
-            raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
-            mono = raw[:, : msg.width]
-            rgb = np.repeat(mono[:, :, None], 3, axis=2)
-        else:
-            channels = 3
-            raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
-            rgb = raw[:, : msg.width * channels].reshape(msg.height, msg.width, channels)
-            if msg.encoding == "bgr8":
-                rgb = rgb[:, :, ::-1]
-
-        return PILImage.fromarray(rgb.astype(np.uint8), mode="RGB")
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
