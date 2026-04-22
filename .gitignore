@@ -3,3 +3,8 @@
 /log
 
 /docs
+/weights/omnivla*
+
+__pycache__
+
+.codex
