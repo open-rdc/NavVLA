@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""ROS2 inference node for OmniVLA-edge navigation."""
 
 from __future__ import annotations
 
@@ -8,8 +7,9 @@ import math
 from collections import deque
 from pathlib import Path
 from typing import Deque, Optional, Tuple
+import cv2
 
-import clip  # type: ignore
+import clip
 import numpy as np
 import torch
 from PIL import Image as PILImage
@@ -17,9 +17,8 @@ from PIL import Image as PILImage
 from OmniVLA.inference.utils_policy import (
     load_model,
     transform_images_PIL_mask,
-    transform_images_map,
 )
-from .preprocess import build_mask, load_yaml
+from .preprocess import build_mask, build_omnivla_edge_inputs, image_to_cv2, load_yaml
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
@@ -30,8 +29,6 @@ from std_msgs.msg import Bool
 
 
 class OmniVLANavigationNode(Node):
-    """Inference node publishing velocity and predicted path from camera input."""
-
     def __init__(
         self,
         nav_config_path: Path,
@@ -39,14 +36,9 @@ class OmniVLANavigationNode(Node):
     ) -> None:
         super().__init__("navigation")
 
-        self.repo_root = Path(__file__).resolve().parents[2]
-        self.omnivla_root = self.repo_root / "OmniVLA"
-        if not self.omnivla_root.exists():
-            raise FileNotFoundError(f"OmniVLA submodule not found: {self.omnivla_root}")
-
         self.autonomous_flag = False
-        self.context_size = None
         self.context_queue = []
+        self.obs_image = None
 
         self.nav_cfg = load_yaml(nav_config_path)
         self.preprocess_cfg = load_yaml(preprocess_config_path)
@@ -159,57 +151,28 @@ class OmniVLANavigationNode(Node):
         self.autonomous_flag = bool(msg.data)
 
     def image_callback(self, msg: Image) -> None:
-        try:
-            channels = 3
-            raw = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
-            rgb = raw[:, : msg.width * channels].reshape(msg.height, msg.width, channels)
-            self.latest_image = PILImage.fromarray(rgb.astype(np.uint8), mode="RGB")
-        except Exception as exc:
-            self.get_logger().warning(f"Failed to decode /image_raw: {exc}")
+        cv_image = image_to_cv2(msg, self.clip_size)
+        self.obs_image = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
 
     def timer_callback(self) -> None:
-        if not self.autonomous_flag or self.latest_image is None:
+        if not self.autonomous_flag or self.obs_image is None:
             return
 
-        try:
-            linear_vel, angular_vel, waypoints = self._infer(self.latest_image)
-        except Exception as exc:
-            self.get_logger().warning(f"Inference failed: {exc}")
+        self.context_queue.append(self.obs_image.resize(self.obs_size))
+        if len(self.context_queue) > self.context_size + 1:
+            self.context_queue.pop(0)
+        if len(self.context_queue) < self.context_size + 1:
             return
 
-        twist = Twist()
-        twist.linear.x = float(linear_vel)
-        twist.angular.z = float(angular_vel)
-        self.cmd_pub.publish(twist)
-
-        path_msg = self._build_path_msg(waypoints)
-        self.path_pub.publish(path_msg)
-
-
-    def _infer(self, current_image: PILImage.Image) -> Tuple[float, float, np.ndarray]:
-        obs_image = current_image.resize(self.obs_size)
-        if not self.context_queue:
-            for _ in range(self.context_size + 1):
-                self.context_queue.append(obs_image)
-        else:
-            self.context_queue.append(obs_image)
-
-        obs_images = transform_images_PIL_mask(list(self.context_queue), self.mask_obs).to(self.device)
-        split_obs = torch.split(obs_images, 3, dim=1)
-        obs_image_cur = split_obs[-1].to(self.device)
-        obs_images = torch.cat(split_obs, dim=1).to(self.device)
-
-        cur_large_img = transform_images_PIL_mask(
-            current_image.resize(self.clip_size), self.mask_clip
-        ).to(self.device)
-
-        map_images = torch.cat(
-            (
-                transform_images_map(self.satellite_current).to(self.device),
-                transform_images_map(self.satellite_goal).to(self.device),
-                obs_image_cur,
-            ),
-            axis=1,
+        obs_images, map_images, cur_large_img = build_omnivla_edge_inputs(
+            context_queue=self.context_queue,
+            current_image=self.obs_image,
+            mask_obs=self.mask_obs,
+            mask_clip=self.mask_clip,
+            satellite_current=self.satellite_current,
+            satellite_goal=self.satellite_goal,
+            clip_size=self.clip_size,
+            device=self.device,
         )
 
         with torch.no_grad():
@@ -223,42 +186,13 @@ class OmniVLANavigationNode(Node):
                 cur_large_img,
             )
 
-        waypoints = action_pred.float().cpu().numpy()[0]
-        selected = max(0, min(self.waypoint_select, waypoints.shape[0] - 1))
-        linear_vel, angular_vel = self._waypoint_to_velocity(waypoints[selected])
-        return linear_vel, angular_vel, waypoints
+        waypoints, linear_vel, angular_vel = self.action_to_waypoints_and_cmd_vel(action_pred)
 
-    def _waypoint_to_velocity(self, waypoint: np.ndarray) -> Tuple[float, float]:
-        dx, dy, hx, hy = [float(v) for v in waypoint]
-        dx *= self.waypoint_spacing
-        dy *= self.waypoint_spacing
+        self.publisher_path(waypoints)
+        self.publisher_command_velocity(linear_vel, angular_vel)
 
-        eps = 1e-8
-        dt = 1.0 / 3.0
 
-        if abs(dx) < eps and abs(dy) < eps:
-            linear_vel = 0.0
-            angular_vel = self._clip_angle(math.atan2(hy, hx)) / dt
-        elif abs(dx) < eps:
-            linear_vel = 0.0
-            angular_vel = math.copysign(math.pi / (2.0 * dt), dy)
-        else:
-            linear_vel = dx / dt
-            angular_vel = math.atan(dy / dx) / dt
-
-        linear_vel = float(np.clip(linear_vel, 0.0, self.linear_max_vel))
-        angular_vel = float(np.clip(angular_vel, -self.angular_max_vel, self.angular_max_vel))
-        return linear_vel, angular_vel
-
-    @staticmethod
-    def _clip_angle(angle: float) -> float:
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-        return angle
-
-    def _build_path_msg(self, waypoints: np.ndarray) -> NavPath:
+    def publisher_path(self, waypoints: np.ndarray) -> None:
         msg = NavPath()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.path_frame_id
@@ -276,28 +210,53 @@ class OmniVLANavigationNode(Node):
             pose.pose.orientation.z = math.sin(yaw / 2.0)
             pose.pose.orientation.w = math.cos(yaw / 2.0)
             msg.poses.append(pose)
+        
+        self.path_pub.publish(msg)
 
-        return msg
+    def publisher_command_velocity(self, linear_vel: float, angular_vel: float) -> None:
+        twist = Twist()
+        twist.linear.x = float(linear_vel)
+        twist.angular.z = float(angular_vel)
+        self.cmd_pub.publish(twist)
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--nav-config",
-        default="deployment/config/nav.yaml",
-        help="Path to nav config yaml",
-    )
-    parser.add_argument(
-        "--preprocess-config",
-        default="deployment/config/preprocess.yaml",
-        help="Path to preprocess config yaml",
-    )
-    return parser.parse_args()
+    def action_to_waypoints_and_cmd_vel(self, action_pred: np.ndarray) -> Tuple[np.ndarray, float, float]:
+        waypoints = action_pred.float().cpu().numpy()[0]
+        selected = max(0, min(self.waypoint_select, waypoints.shape[0] - 1))
+
+        dx, dy, hx, hy = [float(v) for v in waypoints[selected]]
+        dx *= self.waypoint_spacing
+        dy *= self.waypoint_spacing
+
+        eps = 1e-8
+        dt = 1.0 / 3.0
+
+        if abs(dx) < eps and abs(dy) < eps:
+            linear_vel = 0.0
+            angular_vel = self.clip_angle(math.atan2(hy, hx)) / dt
+        elif abs(dx) < eps:
+            linear_vel = 0.0
+            angular_vel = math.copysign(math.pi / (2.0 * dt), dy)
+        else:
+            linear_vel = dx / dt
+            angular_vel = math.atan(dy / dx) / dt
+
+        linear_vel = float(np.clip(linear_vel, 0.0, self.linear_max_vel))
+        angular_vel = float(np.clip(angular_vel, -self.angular_max_vel, self.angular_max_vel))
+        return waypoints, linear_vel, angular_vel
+
+    @staticmethod
+    def clip_angle(angle: float) -> float:
+        while angle > math.pi:
+            angle -= 2.0 * math.pi
+        while angle < -math.pi:
+            angle += 2.0 * math.pi
+        return angle
 
 
 def main() -> int:
-    args = parse_args()
-    nav_config_path = Path(args.nav_config).expanduser().resolve()
-    preprocess_config_path = Path(args.preprocess_config).expanduser().resolve()
+    repo_root = Path(__file__).resolve().parents[2]
+    nav_config_path = (repo_root / "deployment" / "config" / "nav.yaml").resolve()
+    preprocess_config_path = (repo_root / "deployment" / "config" / "preprocess.yaml").resolve()
 
     rclpy.init()
     node = OmniVLANavigationNode(nav_config_path, preprocess_config_path)
