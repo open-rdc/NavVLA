@@ -1,3 +1,24 @@
 image_size: [96, 96]
 context_type: temporal
 normalize: true
+
+datasets:
+  sample:
+    data_folder: /home/<username>/nomad_dataset/sample
+    train: /home/<username>/data_splits/sample/train/ # path to train folder with traj_names.txt
+    test: /home/<username>/data_splits/sample/test/ # path to test folder with traj_names.txt
+    end_slack: 3 # because many trajectories end in collisions
+    goals_per_obs: 1 # how many goals are sampled per observation
+    waypoint_spacing: 1
+    modality_id: 6
+
+# modality flags (pose/image/language) are derived automatically from modality_id
+# 0: satellite only
+# 1: pose and satellite
+# 2: satellite and image
+# 3: all
+# 4: pose only
+# 5: pose and image
+# 6: image only
+# 7: language only
+# 8: language and pose

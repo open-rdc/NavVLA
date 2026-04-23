@@ -12,6 +12,3 @@ save_freq: 1
 eval_freq: 1
 max_train_steps: null
 max_test_steps: null
-
-train_data: training/data/train
-test_data: training/data/test
