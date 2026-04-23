@@ -33,7 +33,6 @@ def validate_config(
                 "learning_rate",
                 "weight_decay",
                 "num_workers",
-                "device",
                 "seed",
                 "save_freq",
                 "eval_freq",
