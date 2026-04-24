@@ -14,6 +14,8 @@ from torchvision import transforms
 import torchvision.transforms.functional as TF
 from PIL import Image
 
+DEFAULT_DUMMY_LANGUAGE = "No language instruction"
+DEFAULT_CLIP_MODEL = "ViT-B/32"
 
 REQUIRED_KEYS = (
     "obs_images",
@@ -109,6 +111,7 @@ class EdgeNavigationDataset(Dataset):
         modality_id: int = 6,
         metric_waypoint_spacing: float = 1.0,
         clip_image_size: Tuple[int, int] = (224, 224),
+        clip_model: str = DEFAULT_CLIP_MODEL,
     ) -> None:
         self.data_folder = Path(data_folder)
         self.data_split_folder = Path(data_split_folder)
@@ -125,6 +128,8 @@ class EdgeNavigationDataset(Dataset):
         self.modality_id = int(modality_id)
         self.metric_waypoint_spacing = float(metric_waypoint_spacing)
         self.clip_image_size = tuple(int(v) for v in clip_image_size)
+        self.clip_model = str(clip_model)
+        self._dummy_text_feature: torch.Tensor | None = None
 
         if self.modality_id not in MODALITY_USES:
             raise ValueError(f"Unsupported modality_id={self.modality_id} for {dataset_name}")
@@ -273,16 +278,28 @@ class EdgeNavigationDataset(Dataset):
             feat = traj_data["lan_prompt_feature"]
         else:
             if "language" in self.modality_uses:
-                raise KeyError(
-                    f"Dataset {self.dataset_name} uses language modality but traj_data.pkl "
-                    "does not contain 'feat_text' or 'lan_prompt_feature'."
-                )
+                return self._get_dummy_text_feature()
             return torch.zeros(512, dtype=torch.float32)
 
         feat_array = np.asarray(feat, dtype=np.float32)
+        if feat_array.size == 0:
+            return self._get_dummy_text_feature() if "language" in self.modality_uses else torch.zeros(512, dtype=torch.float32)
         if feat_array.ndim > 1:
+            if feat_array.shape[0] == 0:
+                return self._get_dummy_text_feature() if "language" in self.modality_uses else torch.zeros(512, dtype=torch.float32)
             feat_array = feat_array[min(curr_time, feat_array.shape[0] - 1)]
         return torch.as_tensor(feat_array, dtype=torch.float32)
+
+    def _get_dummy_text_feature(self) -> torch.Tensor:
+        if self._dummy_text_feature is None:
+            import clip
+
+            with torch.no_grad():
+                text_encoder, _ = clip.load(self.clip_model, device="cpu")
+                text_encoder = text_encoder.float().eval()
+                tokens = clip.tokenize(DEFAULT_DUMMY_LANGUAGE, truncate=True)
+                self._dummy_text_feature = text_encoder.encode_text(tokens).squeeze(0).to(dtype=torch.float32).cpu()
+        return self._dummy_text_feature.clone()
 
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
         base_index = index // self.goals_per_obs
