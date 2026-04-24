@@ -142,7 +142,7 @@ class OmniVLANavigationNode(Node):
         else:
             goal_pose = [0.0, 0.0, 1.0, 0.0]
 
-        self.latest_prompt = "xxxx"
+        self.latest_prompt = "No language instruction"
         self._update_text_feature()
 
         self.satellite_current = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
@@ -187,7 +187,7 @@ class OmniVLANavigationNode(Node):
             device=self.device,
         )
 
-        prompt = self.latest_prompt if self.use_prompt else "no language"
+        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
         token = clip.tokenize(prompt, truncate=True).to(self.device)
         with torch.no_grad():
             self.feat_text = self.text_encoder.encode_text(token)
