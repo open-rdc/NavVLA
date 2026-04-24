@@ -1,6 +1,7 @@
 image_size: [96, 96]
 context_type: temporal
 normalize: true
+clip_model: ViT-B/32
 
 datasets:
   sample:

@@ -59,6 +59,7 @@ def create_dataloaders(
                 modality_id=int(data_config["modality_id"]),
                 metric_waypoint_spacing=float(data_config.get("metric_waypoint_spacing", 1.0)),
                 clip_image_size=tuple(dataset_cfg.get("clip_image_size", (224, 224))),
+                clip_model=str(dataset_cfg.get("clip_model", "ViT-B/32")),
             )
             if data_split_type == "train":
                 train_datasets.append(dataset)
