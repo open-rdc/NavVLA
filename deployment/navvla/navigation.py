@@ -26,7 +26,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Path as NavPath
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 
 class OmniVLANavigationNode(Node):
@@ -52,6 +52,7 @@ class OmniVLANavigationNode(Node):
 
         self.image_sub = self.create_subscription(Image, "/image_raw", self.image_callback, 10)
         self.autonomous_sub = self.create_subscription(Bool, "/autonomous", self.autonomous_callback, 10)
+        self.prompt_sub = self.create_subscription(String, "/prompt", self.prompt_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.path_pub = self.create_publisher(NavPath, "/path", 10)
 
@@ -141,13 +142,8 @@ class OmniVLANavigationNode(Node):
         else:
             goal_pose = [0.0, 0.0, 1.0, 0.0]
 
-        if self.use_prompt:
-            prompt = str(self.nav_cfg.get("lan_prompt", "xxxx"))
-        else:
-            prompt ="xxxx"
-        token = clip.tokenize(prompt, truncate=True).to(self.device)
-        with torch.no_grad():
-            self.feat_text = self.text_encoder.encode_text(token)
+        self.latest_prompt = "xxxx"
+        self._update_text_feature()
 
         self.satellite_current = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
         self.satellite_goal = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
@@ -160,9 +156,15 @@ class OmniVLANavigationNode(Node):
     def autonomous_callback(self, msg: Bool) -> None:
         self.autonomous_flag = bool(msg.data)
 
+    def prompt_callback(self, msg: String) -> None:
+        self.latest_prompt = str(msg.data)
+        if self.use_prompt:
+            self._update_text_feature()
+
     def image_callback(self, msg: Image) -> None:
         cv_image = image_to_cv2(msg, self.clip_size)
         self.obs_image = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+
 
     def timer_callback(self) -> None:
         if not self.autonomous_flag or self.obs_image is None:
@@ -184,6 +186,11 @@ class OmniVLANavigationNode(Node):
             clip_size=self.clip_size,
             device=self.device,
         )
+
+        prompt = self.latest_prompt if self.use_prompt else "no language"
+        token = clip.tokenize(prompt, truncate=True).to(self.device)
+        with torch.no_grad():
+            self.feat_text = self.text_encoder.encode_text(token)
 
         with torch.no_grad():
             action_pred, _, _ = self.model(

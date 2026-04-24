@@ -27,5 +27,3 @@ goal_pose: [10.0, -1.0, 0.0, -1.0]
 goal_image_path: OmniVLA/inference/goal_img.jpg
 lan_prompt: blue trash bin
 path_frame_id: base_link
-
-topomap_dir: topomap
