@@ -129,17 +129,12 @@ class EdgeNavigationDataset(Dataset):
         self.metric_waypoint_spacing = float(metric_waypoint_spacing)
         self.clip_image_size = tuple(int(v) for v in clip_image_size)
         self.clip_model = str(clip_model)
-        self._dummy_text_feature: torch.Tensor | None = None
+        self.dummy_text_feature: torch.Tensor | None = None
+        self.text_encoder = None
+        self.prompt_cache: Dict[str, List[str]] = {}
+        self.text_feature_cache: Dict[str, torch.Tensor] = {}
 
-        if self.modality_id not in MODALITY_USES:
-            raise ValueError(f"Unsupported modality_id={self.modality_id} for {dataset_name}")
-        if self.context_type != "temporal":
-            raise ValueError("Only temporal context_type is supported for OmniVLA-edge datasets.")
-        if self.goals_per_obs < 1:
-            raise ValueError("goals_per_obs must be >= 1.")
-        if self.waypoint_spacing < 1:
-            raise ValueError("waypoint_spacing must be >= 1.")
-
+        self.validate_settings()
         self.modality_uses = MODALITY_USES[self.modality_id]
         if "satellite" in self.modality_uses:
             raise NotImplementedError(
@@ -147,9 +142,9 @@ class EdgeNavigationDataset(Dataset):
                 "Use modality_id values without satellite input, or extend EdgeNavigationDataset "
                 "with explicit map image loading."
             )
-        self.traj_names = self._load_traj_names()
+        self.traj_names = self.load_traj_names()
         self.trajectory_cache: Dict[str, Mapping[str, np.ndarray]] = {}
-        self.index_to_data = self._build_index()
+        self.index_to_data = self.build_sample_index()
         if not self.index_to_data:
             raise ValueError(
                 f"No trainable samples found for dataset={dataset_name} split={self.data_split_folder}"
@@ -164,7 +159,20 @@ class EdgeNavigationDataset(Dataset):
             ]
         )
 
-    def _load_traj_names(self) -> List[str]:
+    def validate_settings(self) -> None:
+        if self.modality_id not in MODALITY_USES:
+            raise ValueError(f"Unsupported modality_id={self.modality_id} for {self.dataset_name}")
+        if self.context_type != "temporal":
+            raise ValueError("Only temporal context_type is supported for OmniVLA-edge datasets.")
+        if self.goals_per_obs < 1:
+            raise ValueError("goals_per_obs must be >= 1.")
+        if self.waypoint_spacing < 1:
+            raise ValueError("waypoint_spacing must be >= 1.")
+
+    def uses_modality(self, name: str) -> bool:
+        return name in self.modality_uses
+
+    def load_traj_names(self) -> List[str]:
         traj_names_file = (
             self.data_split_folder
             if self.data_split_folder.is_file()
@@ -175,7 +183,7 @@ class EdgeNavigationDataset(Dataset):
         names = [line.strip() for line in traj_names_file.read_text().splitlines()]
         return [name for name in names if name]
 
-    def _get_trajectory(self, traj_name: str) -> Mapping[str, np.ndarray]:
+    def load_trajectory(self, traj_name: str) -> Mapping[str, np.ndarray]:
         if traj_name not in self.trajectory_cache:
             traj_path = self.data_folder / traj_name / "traj_data.pkl"
             if not traj_path.exists():
@@ -184,26 +192,26 @@ class EdgeNavigationDataset(Dataset):
                 self.trajectory_cache[traj_name] = pickle.load(f)
         return self.trajectory_cache[traj_name]
 
-    def _positions(self, traj_data: Mapping[str, np.ndarray]) -> np.ndarray:
+    def read_positions(self, traj_data: Mapping[str, np.ndarray]) -> np.ndarray:
         for key in ("position", "positions"):
             if key in traj_data:
                 return np.asarray(traj_data[key], dtype=np.float32)
         raise KeyError("traj_data.pkl must contain 'position' or 'positions'.")
 
-    def _yaw(self, traj_data: Mapping[str, np.ndarray]) -> np.ndarray:
+    def read_yaw(self, traj_data: Mapping[str, np.ndarray]) -> np.ndarray:
         for key in ("yaw", "yaws", "heading", "headings"):
             if key in traj_data:
                 yaw = np.asarray(traj_data[key], dtype=np.float32)
                 return yaw.squeeze(-1) if yaw.ndim == 2 and yaw.shape[-1] == 1 else yaw
         raise KeyError("traj_data.pkl must contain yaw/heading data.")
 
-    def _build_index(self) -> List[Tuple[str, int, int]]:
+    def build_sample_index(self) -> List[Tuple[str, int, int]]:
         samples = []
         begin_time = self.context_size * self.waypoint_spacing
         action_horizon = self.len_traj_pred * self.waypoint_spacing
         for traj_name in self.traj_names:
-            traj_data = self._get_trajectory(traj_name)
-            traj_len = len(self._positions(traj_data))
+            traj_data = self.load_trajectory(traj_name)
+            traj_len = len(self.read_positions(traj_data))
             end_time = traj_len - self.end_slack - action_horizon
             for curr_time in range(begin_time, end_time):
                 max_goal_time = min(traj_len - self.end_slack - 1, curr_time + action_horizon)
@@ -214,7 +222,7 @@ class EdgeNavigationDataset(Dataset):
     def __len__(self) -> int:
         return len(self.index_to_data) * self.goals_per_obs
 
-    def _load_image(self, traj_name: str, time: int, size: Tuple[int, int]) -> torch.Tensor:
+    def load_image(self, traj_name: str, time: int, size: Tuple[int, int]) -> torch.Tensor:
         image_path = self.data_folder / traj_name / f"{time}.jpg"
         if not image_path.exists():
             raise FileNotFoundError(f"Missing image: {image_path}")
@@ -225,7 +233,7 @@ class EdgeNavigationDataset(Dataset):
             image = self.image_transform(image)
         return image
 
-    def _to_local_coords(
+    def convert_to_local_coords(
         self, positions: np.ndarray, curr_pos: np.ndarray, curr_yaw: float
     ) -> np.ndarray:
         rotmat = np.array(
@@ -237,11 +245,11 @@ class EdgeNavigationDataset(Dataset):
         )
         return (positions - curr_pos).dot(rotmat)
 
-    def _compute_actions(
+    def compute_actions(
         self, traj_data: Mapping[str, np.ndarray], curr_time: int, goal_time: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        positions_all = self._positions(traj_data)
-        yaw_all = self._yaw(traj_data)
+        positions_all = self.read_positions(traj_data)
+        yaw_all = self.read_yaw(traj_data)
         indices = [
             min(curr_time + i * self.waypoint_spacing, len(positions_all) - 1)
             for i in range(self.len_traj_pred + 1)
@@ -250,8 +258,8 @@ class EdgeNavigationDataset(Dataset):
         yaw = yaw_all[indices]
         goal_pos = positions_all[min(goal_time, len(positions_all) - 1)]
 
-        waypoints = self._to_local_coords(positions, positions[0], float(yaw[0]))
-        goal_pos_local = self._to_local_coords(goal_pos[None], positions[0], float(yaw[0]))[0]
+        waypoints = self.convert_to_local_coords(positions, positions[0], float(yaw[0]))
+        goal_pos_local = self.convert_to_local_coords(goal_pos[None], positions[0], float(yaw[0]))[0]
 
         actions_xy = waypoints[1:]
         if self.normalize:
@@ -271,65 +279,118 @@ class EdgeNavigationDataset(Dataset):
             torch.as_tensor(goal_pos_local, dtype=torch.float32),
         )
 
-    def _get_text_feature(self, traj_data: Mapping[str, np.ndarray], curr_time: int) -> torch.Tensor:
+    def zero_text_feature(self) -> torch.Tensor:
+        return torch.zeros(512, dtype=torch.float32)
+
+    def fallback_text_feature(self) -> torch.Tensor:
+        if self.uses_modality("language"):
+            return self.get_dummy_text_feature()
+        return self.zero_text_feature()
+
+    def get_text_feature(self, traj_data: Mapping[str, np.ndarray], curr_time: int) -> torch.Tensor:
         if "feat_text" in traj_data:
             feat = traj_data["feat_text"]
         elif "lan_prompt_feature" in traj_data:
             feat = traj_data["lan_prompt_feature"]
         else:
-            if "language" in self.modality_uses:
-                return self._get_dummy_text_feature()
-            return torch.zeros(512, dtype=torch.float32)
+            return self.fallback_text_feature()
 
         feat_array = np.asarray(feat, dtype=np.float32)
         if feat_array.size == 0:
-            return self._get_dummy_text_feature() if "language" in self.modality_uses else torch.zeros(512, dtype=torch.float32)
+            return self.fallback_text_feature()
         if feat_array.ndim > 1:
             if feat_array.shape[0] == 0:
-                return self._get_dummy_text_feature() if "language" in self.modality_uses else torch.zeros(512, dtype=torch.float32)
+                return self.fallback_text_feature()
             feat_array = feat_array[min(curr_time, feat_array.shape[0] - 1)]
         return torch.as_tensor(feat_array, dtype=torch.float32)
 
-    def _get_dummy_text_feature(self) -> torch.Tensor:
-        if self._dummy_text_feature is None:
+    def get_prompt(self, traj_name: str, curr_time: int) -> str:
+        if traj_name not in self.prompt_cache:
+            prompt_path = self.data_folder / traj_name / "traj_prompt.txt"
+            if not prompt_path.exists():
+                raise FileNotFoundError(f"Missing language prompt data: {prompt_path}")
+            self.prompt_cache[traj_name] = prompt_path.read_text(encoding="utf-8").splitlines()
+
+        prompts = self.prompt_cache[traj_name]
+        if not prompts:
+            return DEFAULT_DUMMY_LANGUAGE
+        return prompts[min(curr_time, len(prompts) - 1)].strip() or DEFAULT_DUMMY_LANGUAGE
+
+    def encode_text(self, text: str) -> torch.Tensor:
+        if text not in self.text_feature_cache:
             import clip
 
-            with torch.no_grad():
+            if self.text_encoder is None:
                 text_encoder, _ = clip.load(self.clip_model, device="cpu")
-                text_encoder = text_encoder.float().eval()
-                tokens = clip.tokenize(DEFAULT_DUMMY_LANGUAGE, truncate=True)
-                self._dummy_text_feature = text_encoder.encode_text(tokens).squeeze(0).to(dtype=torch.float32).cpu()
-        return self._dummy_text_feature.clone()
+                self.text_encoder = text_encoder.float().eval()
+            with torch.no_grad():
+                tokens = clip.tokenize(text, truncate=True)
+                self.text_feature_cache[text] = (
+                    self.text_encoder.encode_text(tokens).squeeze(0).to(dtype=torch.float32).cpu()
+                )
+        return self.text_feature_cache[text].clone()
+
+    def get_prompt_text_feature(self, traj_name: str, curr_time: int) -> torch.Tensor:
+        return self.encode_text(self.get_prompt(traj_name, curr_time))
+
+    def get_dummy_text_feature(self) -> torch.Tensor:
+        if self.dummy_text_feature is None:
+            self.dummy_text_feature = self.encode_text(DEFAULT_DUMMY_LANGUAGE)
+        return self.dummy_text_feature.clone()
+
+    def context_times(self, curr_time: int) -> range:
+        start_time = curr_time - self.context_size * self.waypoint_spacing
+        return range(start_time, curr_time + 1, self.waypoint_spacing)
+
+    def build_observation_images(self, traj_name: str, curr_time: int) -> torch.Tensor:
+        return torch.cat(
+            [self.load_image(traj_name, time, self.image_size) for time in self.context_times(curr_time)],
+            dim=0,
+        )
+
+    def build_map_images(self, obs_images: torch.Tensor, goal_image: torch.Tensor) -> torch.Tensor:
+        current_small = obs_images[-3:]
+        return torch.cat((current_small, goal_image, current_small), dim=0)
+
+    def build_goal_pose(
+        self,
+        traj_data: Mapping[str, np.ndarray],
+        curr_time: int,
+        goal_time: int,
+        goal_pos: torch.Tensor,
+    ) -> torch.Tensor:
+        goal_pose = torch.zeros(4, dtype=torch.float32)
+        if self.uses_modality("pose"):
+            yaw = self.read_yaw(traj_data)
+            goal_pose[:2] = goal_pos
+            goal_pose[2] = math.cos(float(yaw[goal_time] - yaw[curr_time]))
+            goal_pose[3] = math.sin(float(yaw[goal_time] - yaw[curr_time]))
+        return goal_pose
+
+    def build_language_feature(
+        self,
+        traj_name: str,
+        traj_data: Mapping[str, np.ndarray],
+        curr_time: int,
+    ) -> torch.Tensor:
+        if self.uses_modality("language"):
+            return self.get_prompt_text_feature(traj_name, curr_time)
+        return self.get_text_feature(traj_data, curr_time)
 
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
         base_index = index // self.goals_per_obs
         traj_name, curr_time, max_goal_time = self.index_to_data[base_index]
         goal_time = np.random.randint(curr_time + 1, max_goal_time + 1)
-        traj_data = self._get_trajectory(traj_name)
+        traj_data = self.load_trajectory(traj_name)
 
-        context_times = range(
-            curr_time - self.context_size * self.waypoint_spacing,
-            curr_time + 1,
-            self.waypoint_spacing,
-        )
-        obs_images = torch.cat(
-            [self._load_image(traj_name, t, self.image_size) for t in context_times],
-            dim=0,
-        )
-        goal_image = self._load_image(traj_name, goal_time, self.image_size)
-        current_img = self._load_image(traj_name, curr_time, self.clip_image_size)
+        obs_images = self.build_observation_images(traj_name, curr_time)
+        goal_image = self.load_image(traj_name, goal_time, self.image_size)
+        current_img = self.load_image(traj_name, curr_time, self.clip_image_size)
 
-        actions, goal_pos = self._compute_actions(traj_data, curr_time, goal_time)
-        goal_pose = torch.zeros(4, dtype=torch.float32)
-        if "pose" in self.modality_uses:
-            yaw = self._yaw(traj_data)
-            goal_pose[:2] = goal_pos
-            goal_pose[2] = math.cos(float(yaw[goal_time] - yaw[curr_time]))
-            goal_pose[3] = math.sin(float(yaw[goal_time] - yaw[curr_time]))
-
-        current_small = obs_images[-3:]
-        map_images = torch.cat((current_small, goal_image, current_small), dim=0)
-        feat_text = self._get_text_feature(traj_data, curr_time)
+        actions, goal_pos = self.compute_actions(traj_data, curr_time, goal_time)
+        goal_pose = self.build_goal_pose(traj_data, curr_time, goal_time, goal_pos)
+        map_images = self.build_map_images(obs_images, goal_image)
+        feat_text = self.build_language_feature(traj_name, traj_data, curr_time)
 
         return {
             "obs_images": obs_images,
