@@ -71,7 +71,7 @@ class DataCollectionNode(Node):
     def _image_callback(self, msg: Image) -> None:
         try:
             cv_img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
-            self.latest_image = cv2.resize(cv_img, (512, 288), interpolation=cv2.INTER_LINEAR)
+            self.latest_image = cv2.resize(cv_img, (224, 224), interpolation=cv2.INTER_LINEAR)
             if not self._img_received:
                 self._img_received = True
                 self.get_logger().info('Camera image received.')
