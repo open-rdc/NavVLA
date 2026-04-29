@@ -9,3 +9,4 @@ __pycache__
 training/weights/*.pth
 training/config/dataset.yaml
 training/runs
+training/dataset/

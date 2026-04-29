@@ -9,6 +9,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import rclpy
+from ament_index_python.packages import get_package_prefix
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
@@ -31,6 +32,18 @@ class DataCollectionNode(Node):
     def __init__(self) -> None:
         super().__init__('data_collection_node')
         self.bridge = CvBridge()
+
+        try:
+            # install/navvla -> install -> <ws_root>
+            ws_root = Path(get_package_prefix('navvla')).parent.parent
+            default_save_dir = str(ws_root / 'src' / 'NavVLA' / 'training' / 'dataset')
+        except Exception:
+            default_save_dir = str(Path.home() / 'navvla_dataset')
+
+        self.declare_parameter('save_dir', default_save_dir)
+        self.save_dir = Path(
+            self.get_parameter('save_dir').get_parameter_value().string_value
+        )
 
         self.raw_data_buffer = []
 
@@ -122,12 +135,9 @@ class DataCollectionNode(Node):
 
         self.get_logger().info(f'Saving {num_samples} frames...')
 
-        # deployment/navvla/data_collection.py -> parents[2] = NavVLA/
-        package_root = Path(__file__).resolve().parents[2]
-        data_dir = package_root / 'training' / 'data' / 'train'
-
+        data_dir = self.save_dir
         timestamp_str = time.strftime('%Y%m%d_%H%M%S')
-        dataset_name = f'navvla_mono_{timestamp_str}'
+        dataset_name = f'navvla_{timestamp_str}'
         traj_dir = data_dir / dataset_name / 'traj_0'
         traj_dir.mkdir(parents=True, exist_ok=True)
 
