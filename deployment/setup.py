@@ -65,6 +65,7 @@ setup(
     entry_points={
         "console_scripts": [
             "navigation_node = navvla.navigation:main",
+            "data_collection_node = navvla.data_collection:main",
         ],
     },
 )
