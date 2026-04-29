@@ -9,7 +9,6 @@ from typing import Optional
 import cv2
 import numpy as np
 import rclpy
-from ament_index_python.packages import get_package_prefix
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
@@ -20,6 +19,9 @@ from std_msgs.msg import Empty
 
 SAMPLE_INTERVAL = 0.1  # 10 Hz
 HORIZON = 8
+
+# data_collection/data_collection.py -> parents[1] = NavVLA/
+_DEFAULT_SAVE_DIR = str(Path(__file__).resolve().parents[1] / 'training' / 'dataset')
 
 
 class DataCollectionNode(Node):
@@ -33,14 +35,7 @@ class DataCollectionNode(Node):
         super().__init__('data_collection_node')
         self.bridge = CvBridge()
 
-        try:
-            # install/navvla -> install -> <ws_root>
-            ws_root = Path(get_package_prefix('navvla')).parent.parent
-            default_save_dir = str(ws_root / 'src' / 'NavVLA' / 'training' / 'dataset')
-        except Exception:
-            default_save_dir = str(Path.home() / 'navvla_dataset')
-
-        self.declare_parameter('save_dir', default_save_dir)
+        self.declare_parameter('save_dir', _DEFAULT_SAVE_DIR)
         self.save_dir = Path(
             self.get_parameter('save_dir').get_parameter_value().string_value
         )
@@ -79,6 +74,7 @@ class DataCollectionNode(Node):
         self.get_logger().info('Data Collection Node Started')
         self.get_logger().info('Waiting for /image_raw and /Odometry...')
         self.get_logger().info('Publish to /flag to START/STOP recording')
+        self.get_logger().info(f'Save dir: {self.save_dir}')
         self.get_logger().info('==========================================')
 
     def _image_callback(self, msg: Image) -> None:
@@ -145,7 +141,6 @@ class DataCollectionNode(Node):
         yaws = []
 
         for i, (img, pose, _ts) in enumerate(self.raw_data_buffer):
-            # EdgeNavigationDataset は traj_dir/{i}.jpg を期待する
             cv2.imwrite(str(traj_dir / f'{i}.jpg'), img)
             positions.append([pose[0], pose[1]])
             yaws.append(pose[2])
