@@ -18,7 +18,6 @@ from std_msgs.msg import Empty
 import shutil
 
 SAMPLE_INTERVAL = 0.1  # 10 Hz
-HORIZON = 8
 
 # data_collection/data_collection.py -> parents[1] = NavVLA/
 _DEFAULT_SAVE_DIR = str(Path(__file__).resolve().parents[1] / 'training' / 'dataset')
@@ -39,6 +38,21 @@ class DataCollectionNode(Node):
         self.save_dir = Path(
             self.get_parameter('save_dir').get_parameter_value().string_value
         )
+
+        # Training dataset parameters — must match training/config/network.yaml and dataset.yaml.
+        # Used to compute the minimum trajectory length that yields at least one trainable sample.
+        # Formula (from training/data/dataset.py):
+        #   min_frames = (context_size + len_traj_pred) * waypoint_spacing + end_slack + 1
+        self.declare_parameter('context_size', 5)
+        self.declare_parameter('len_traj_pred', 8)
+        self.declare_parameter('waypoint_spacing', 1)
+        self.declare_parameter('end_slack', 3)
+
+        context_size    = self.get_parameter('context_size').get_parameter_value().integer_value
+        len_traj_pred   = self.get_parameter('len_traj_pred').get_parameter_value().integer_value
+        waypoint_spacing = self.get_parameter('waypoint_spacing').get_parameter_value().integer_value
+        end_slack       = self.get_parameter('end_slack').get_parameter_value().integer_value
+        self.min_frames = (context_size + len_traj_pred) * waypoint_spacing + end_slack + 1
 
         self.raw_data_buffer = []
         self.frame_count = 0
@@ -78,6 +92,7 @@ class DataCollectionNode(Node):
         self.get_logger().info('Waiting for /image_raw and /Odometry...')
         self.get_logger().info('Publish to /flag to START/STOP recording')
         self.get_logger().info(f'Save dir: {self.save_dir}')
+        self.get_logger().info(f'Min frames required: {self.min_frames}')
         self.get_logger().info('==========================================')
 
     def _image_callback(self, msg: Image) -> None:
@@ -163,9 +178,9 @@ class DataCollectionNode(Node):
             return
         
         num_samples = len(self.raw_data_buffer)
-        if num_samples < HORIZON + 1:
+        if num_samples < self.min_frames:
             self.get_logger().warn(
-                f'⚠️Not enough data ({num_samples} frames). Need at least {HORIZON + 1}.'
+                f'⚠️Not enough data ({num_samples} frames). Need at least {self.min_frames}.'
             )
             return
 
