@@ -155,10 +155,16 @@ class DataCollectionNode(Node):
         })
 
         if self.temp_dir is not None:
-            cv2.imwrite(
+            ok = cv2.imwrite(
                 str(self.temp_dir / f'{self.frame_count:06d}.jpg'),
                 self.latest_image
             )
+            if not ok:
+                self.raw_data_buffer.pop()  # pose と画像の対応を保つ
+                self.get_logger().error(
+                    f'❌Failed to write image {self.frame_count:06d}.jpg — frame dropped.'
+                )
+                return
 
         self.frame_count += 1
 
