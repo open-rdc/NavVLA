@@ -95,11 +95,7 @@ class DataCollectionNode(Node):
     def _odom_callback(self, msg: Odometry) -> None:
         pos = msg.pose.pose.position
         q = msg.pose.pose.orientation
-        yaw = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
-        )
-        self.latest_pose = np.array([pos.x, pos.y, yaw], dtype=np.float32)
+        self.latest_pose = np.array([pos.x, pos.y, q.w, q.x, q.y, q.z], dtype=np.float32)
         if not self._odom_received:
             self._odom_received = True
             self.get_logger().info('Odometry received.')
@@ -117,9 +113,17 @@ class DataCollectionNode(Node):
         if self.latest_image is None or not self._odom_received:
             return
 
+        x, y, qw, qx, qy, qz = self.latest_pose
+        yaw = math.atan2(
+            2.0 * (qw * qz + qx * qy),
+            1.0 - 2.0 * (qy * qy + qz * qz),
+        )
+                
+        pose_with_yaw = np.array([x, y, yaw], dtype=np.float32)
+
         self.raw_data_buffer.append((
             self.latest_image.copy(),
-            self.latest_pose.copy(),
+            pose_with_yaw,
             time.time(),
         ))
 
