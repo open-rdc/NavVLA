@@ -15,6 +15,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import Empty
+import shutil
 
 SAMPLE_INTERVAL = 0.1  # 10 Hz
 HORIZON = 8
@@ -40,6 +41,9 @@ class DataCollectionNode(Node):
         )
 
         self.raw_data_buffer = []
+        self.frame_count = 0
+        self.temp_dir = None
+        self.max_buffer_size = 100
 
         self.latest_image: Optional[np.ndarray] = None
         self.latest_pose = np.array([0.0, 0.0, 0.0], dtype=np.float32)
@@ -92,6 +96,7 @@ class DataCollectionNode(Node):
         except Exception as e:
             self.get_logger().error(f'Failed to convert image: {e}')
 
+
     def _odom_callback(self, msg: Odometry) -> None:
         pos = msg.pose.pose.position
         q = msg.pose.pose.orientation
@@ -100,12 +105,20 @@ class DataCollectionNode(Node):
             self._odom_received = True
             self.get_logger().info('Odometry received.')
 
+
     def _flag_callback(self, _msg: Empty) -> None:
         self.is_recording = not self.is_recording
         status = 'STARTED' if self.is_recording else 'PAUSED'
-        self.get_logger().info(
-            f'Recording {status}. Buffer size: {len(self.raw_data_buffer)}'
-        )
+
+        if self.is_recording:
+            timestamp_str = time.strftime('%Y%m%d_%H%M%S')
+            self.temp_dir = Path('/tmp') / f'navvla_recording_{timestamp_str}'
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            self.frame_count = 0
+            self.get_logger().info(f'🟢 recording {status}. Temp dir: {self.temp_dir}')
+        else:
+            self.get_logger().info(f' ⏸️ Recording {status}. Buffer size: {len(self.raw_data_buffer)}')
+
 
     def _timer_callback(self) -> None:
         if not self.is_recording:
@@ -121,36 +134,66 @@ class DataCollectionNode(Node):
                 
         pose_with_yaw = np.array([x, y, yaw], dtype=np.float32)
 
-        self.raw_data_buffer.append((
-            self.latest_image.copy(),
-            pose_with_yaw,
-            time.time(),
-        ))
+        self.raw_data_buffer.append({
+            'frame_id' : self.frame_count,
+            'pose': pose_with_yaw.copy(),  # 12 bytes
+            'timestamp': time.time(),      # 8 bytes
+        })
 
-        if len(self.raw_data_buffer) % 10 == 0:
-            self.get_logger().info(f'Collected {len(self.raw_data_buffer)} frames.')
+        if self.temp_dir is not None:
+            cv2.imwrite(
+                str(self.temp_dir / f'{self.frame_count:06d}.jpg'),
+                self.latest_image
+            )
+
+        self.frame_count += 1
+
+        if len(self.raw_data_buffer) > self.max_buffer_size:
+            self.raw_data_buffer.pop(0)
+        
+        if self.frame_count % 10 == 0:
+            self.get_logger().info(
+                f'📊 Collected {self.frame_count} frames. '
+                f'Buffer: {len(self.raw_data_buffer)} / {self.max_buffer_size}'
+            )
+
 
     def save_data(self) -> None:
+        if self.frame_count == 0:
+            self.get_logger().warn('⚠️No data collected. Nothing to save.')
+            return
+        
         num_samples = len(self.raw_data_buffer)
         if num_samples < HORIZON + 1:
             self.get_logger().warn(
-                f'Not enough data ({num_samples} frames). Need at least {HORIZON + 1}.'
+                f'⚠️Not enough data ({num_samples} frames). Need at least {HORIZON + 1}.'
             )
             return
 
-        self.get_logger().info(f'Saving {num_samples} frames...')
+        self.get_logger().info(f'💾Saving {num_samples} frames...')
 
         data_dir = self.save_dir
         timestamp_str = time.strftime('%Y%m%d_%H%M%S')
         dataset_name = f'navvla_{timestamp_str}'
         traj_dir = data_dir / dataset_name / 'traj_0'
-        traj_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            traj_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.get_logger().error(f'❌Failed to create directory: {e}')
+            return
+
+        if self.temp_dir is not None and self.temp_dir.exists():
+            for jpg_file in sorted(self.temp_dir.glob('*.jpg')):
+                frame_id = int(jpg_file.stem)
+                dst_path = traj_dir / f'{frame_id:06d}.jpg'
+                shutil.move(str(jpg_file), str(dst_path))
 
         positions = []
         yaws = []
 
-        for i, (img, pose, _ts) in enumerate(self.raw_data_buffer):
-            cv2.imwrite(str(traj_dir / f'{i}.jpg'), img)
+        for metadata in self.raw_data_buffer:
+            pose = metadata['pose']
             positions.append([pose[0], pose[1]])
             yaws.append(pose[2])
 
@@ -158,14 +201,24 @@ class DataCollectionNode(Node):
             'position': np.array(positions, dtype=np.float32),
             'yaw': np.array(yaws, dtype=np.float32),
         }
-        with open(traj_dir / 'traj_data.pkl', 'wb') as f:
-            pickle.dump(traj_data, f)
 
-        with open(data_dir / dataset_name / 'traj_names.txt', 'w') as f:
-            f.write('traj_0\n')
+        try:
+            with open(traj_dir / 'traj_data.pkl', 'wb') as f:
+                pickle.dump(traj_data, f)
 
-        self.get_logger().info(f'Saved dataset to: {traj_dir.parent}')
+            with open(data_dir / dataset_name / 'traj_names.txt', 'w') as f:
+                f.write('traj_0\n')
 
+            self.get_logger().info(f'Saved dataset to: {traj_dir.parent}')
+        except Exception as e:
+            self.get_logger().error(f'❌Failed to save data: {e}')
+
+        if self.temp_dir is not None and self.temp_dir.exists():
+            try:
+                shutil.rmtree(self.temp_dir)
+                self.get_logger().info(f'🧹 Cleaned up temp dir: {self.temp_dir}')
+            except Exception as e:
+                self.get_logger().error(f'❌Failed to clean temp dir: {e}')
 
 def main(args=None):
     rclpy.init(args=args)
