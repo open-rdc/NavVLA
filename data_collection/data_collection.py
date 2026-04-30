@@ -137,7 +137,6 @@ class DataCollectionNode(Node):
         self.raw_data_buffer.append({
             'frame_id' : self.frame_count,
             'pose': pose_with_yaw.copy(),  # 12 bytes
-            'timestamp': time.time(),      # 8 bytes
         })
 
         if self.temp_dir is not None:
