@@ -11,6 +11,16 @@ deployment_weight_files = [
     for path in sorted((deployment_dir / "weights").glob("*"))
     if path.is_file()
 ]
+topomap_files = [
+    str(path.relative_to(deployment_dir))
+    for path in sorted((deployment_dir / "config" / "topomap").glob("*.yaml"))
+    if path.is_file()
+]
+topomap_image_files = [
+    str(path.relative_to(deployment_dir))
+    for path in sorted((deployment_dir / "config" / "topomap" / "images").glob("*.png"))
+    if path.is_file()
+]
 
 navvla_packages = find_packages(include=["navvla", "navvla.*"])
 omnivla_packages = ["OmniVLA", "OmniVLA.inference"] + find_packages(
@@ -54,6 +64,14 @@ setup(
             f"share/{package_name}/deployment/weights",
             deployment_weight_files,
         ),
+        (
+            f"share/{package_name}/config/topomap",
+            topomap_files,
+        ),
+        (
+            f"share/{package_name}/config/topomap/images",
+            topomap_image_files,
+        ),
     ],
     install_requires=["setuptools", "numpy", "PyYAML"],
     zip_safe=True,
@@ -65,6 +83,7 @@ setup(
     entry_points={
         "console_scripts": [
             "navigation_node = navvla.navigation:main",
+            "create_topomap = navvla.create_topomap:main",
         ],
     },
 )
