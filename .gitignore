@@ -10,3 +10,5 @@ training/weights/*.pth
 training/config/dataset.yaml
 training/runs
 training/dataset/
+deployment/config/topomap/
+deployment/weights/*.pt
