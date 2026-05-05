@@ -169,12 +169,12 @@ class OmniVLANavigationNode(Node):
         if not self.use_toponav:
             return
 
+        if not self.use_goal_image:
+            raise ValueError("Toponav requires a modality_id that uses goal_image.")
+
         topomap_path = self.resolve_package_path(str(self.nav_cfg.get("topomap_path", "config/topomap/topomap.yaml")))
         image_dir = self.resolve_package_path(str(self.nav_cfg.get("topomap_image_dir", "config/topomap/images")))
         weight_path = self.resolve_package_path(str(self.nav_cfg.get("placenet_weight_path", "deployment/weights/placenet.pt")))
-
-        if not self.use_goal_image:
-            self.get_logger().warn("Toponav is enabled, but the selected modality does not use goal_image.")
 
         self.toponav = TopologicalNavigator(
             topomap_path=topomap_path,
@@ -195,8 +195,10 @@ class OmniVLANavigationNode(Node):
             self._update_text_feature()
 
     def image_callback(self, msg: Image) -> None:
+        raw_image = np.frombuffer(msg.data, dtype=np.uint8).reshape((int(msg.height), int(msg.width), 3))
+        self.obs_image_bgr = cv2.cvtColor(raw_image, cv2.COLOR_RGB2BGR)
+
         cv_image = image_to_cv2(msg, self.clip_size)
-        self.obs_image_bgr = cv_image
         self.obs_image = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
 
 
