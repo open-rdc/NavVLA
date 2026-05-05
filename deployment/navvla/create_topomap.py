@@ -4,11 +4,120 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
+import cv2
+import numpy as np
 import torch
+import yaml
+from torchvision import transforms
 
-from .toponav import TopomapGenerator
+
+class TopomapGenerator:
+    COMMAND_TO_ACTION = {
+        0: "roadside",
+        1: "straight",
+        2: "left",
+        3: "right",
+    }
+
+    def __init__(
+        self,
+        dataset_path: Path,
+        output_dir: Path,
+        weight_path: Path,
+        device: torch.device,
+        saved_step: int = 10,
+        crop_size: int = 288,
+    ) -> None:
+        self.dataset_path = Path(dataset_path)
+        self.image_dir = self.dataset_path / "images"
+        self.command_dir = self.dataset_path / "commands"
+        self.output_dir = Path(output_dir)
+        self.output_image_dir = self.output_dir / "images"
+        self.topomap_path = self.output_dir / "topomap.yaml"
+        self.weight_path = Path(weight_path)
+        self.device = device
+        self.saved_step = int(saved_step)
+        self.crop_size = int(crop_size)
+        if self.saved_step < 1:
+            raise ValueError("saved_step must be >= 1")
+
+        self.model = torch.jit.load(str(self.weight_path), map_location=self.device).eval()
+        self.transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Resize((85, 85), antialias=True),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+
+    def _load_command(self, image_path: Path) -> int:
+        command_path = self.command_dir / f"{image_path.stem}.csv"
+        with command_path.open("r", encoding="utf-8") as f:
+            line = f.readline().strip()
+        return int(float(line.split(",")[0]))
+
+    def _preprocess_image(self, image_path: Path) -> np.ndarray:
+        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError(f"Failed to read image: {image_path}")
+
+        height, width = image.shape[:2]
+        side = min(height, width, self.crop_size)
+        top = (height - side) // 2
+        left = (width - side) // 2
+        cropped = image[top : top + side, left : left + side]
+        return cv2.resize(cropped, (85, 85), interpolation=cv2.INTER_AREA)
+
+    def _extract_feature(self, image_bgr: np.ndarray) -> Sequence[float]:
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        image_tensor = self.transform(image_rgb).unsqueeze(0).to(self.device, dtype=torch.float32)
+        with torch.no_grad():
+            feature = self.model(image_tensor)
+
+        feature_np = feature.squeeze(0).detach().cpu().numpy().reshape(-1).astype(np.float32)
+        norm = float(np.linalg.norm(feature_np))
+        if norm > 1e-8:
+            feature_np = feature_np / norm
+        return feature_np.tolist()
+
+    def generate(self) -> Path:
+        if not self.image_dir.is_dir():
+            raise FileNotFoundError(f"Dataset image directory not found: {self.image_dir}")
+        if not self.command_dir.is_dir():
+            raise FileNotFoundError(f"Dataset command directory not found: {self.command_dir}")
+
+        self.output_image_dir.mkdir(parents=True, exist_ok=True)
+        image_paths = sorted(self.image_dir.glob("*.png"))
+        if not image_paths:
+            raise ValueError(f"No dataset images found: {self.image_dir}")
+
+        nodes = []
+        for node_index, image_path in enumerate(image_paths[:: self.saved_step]):
+            command = self._load_command(image_path)
+            if command not in self.COMMAND_TO_ACTION:
+                raise ValueError(f"Unsupported command value: {command}")
+
+            processed_image = self._preprocess_image(image_path)
+            output_image_name = f"img{node_index + 1:05d}.png"
+            cv2.imwrite(str(self.output_image_dir / output_image_name), processed_image)
+            nodes.append(
+                {
+                    "id": node_index,
+                    "image": output_image_name,
+                    "feature": self._extract_feature(processed_image),
+                    "action": self.COMMAND_TO_ACTION[command],
+                }
+            )
+
+        for node_index, node in enumerate(nodes):
+            target = node_index + 1 if node_index + 1 < len(nodes) else node_index
+            node["edges"] = [{"target": target, "action": node.pop("action")}]
+
+        with self.topomap_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump({"nodes": nodes}, f, sort_keys=False, allow_unicode=False)
+        return self.topomap_path
 
 
 def main(args: Optional[list[str]] = None) -> int:
