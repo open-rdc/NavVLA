@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from collections import deque
 from pathlib import Path
 from typing import Deque, Optional, Tuple
@@ -15,11 +16,21 @@ import numpy as np
 import torch
 from PIL import Image as PILImage
 
+_THIS_FILE = Path(__file__).resolve()
+_REPO_ROOT_CANDIDATES = [
+    _THIS_FILE.parents[2],
+    _THIS_FILE.parents[4] / "src" / "NavVLA" if len(_THIS_FILE.parents) > 4 else None,
+]
+for _repo_root in reversed([path for path in _REPO_ROOT_CANDIDATES if path is not None and (path / "OmniVLA").exists()]):
+    for _path in (_repo_root, _repo_root / "OmniVLA", _repo_root / "OmniVLA" / "inference"):
+        if str(_path) not in sys.path:
+            sys.path.insert(0, str(_path))
+
 from OmniVLA.inference.utils_policy import (
     load_model,
     transform_images_PIL_mask,
 )
-from .preprocess import build_mask, build_omnivla_edge_inputs, image_to_cv2, load_yaml
+from .preprocess import build_mask, build_omnivla_edge_inputs, image_msg_to_bgr, image_to_cv2, load_yaml
 from .toponav import TopologicalNavigator
 
 import rclpy
@@ -155,6 +166,12 @@ class OmniVLANavigationNode(Node):
         self.goal_pose_tensor = torch.tensor([goal_pose], dtype=torch.float32, device=self.device)
         self.modality_tensor = torch.tensor([self.modality_id], dtype=torch.long, device=self.device)
 
+    def _update_text_feature(self) -> None:
+        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
+        token = clip.tokenize(prompt, truncate=True).to(self.device)
+        with torch.no_grad():
+            self.feat_text = self.text_encoder.encode_text(token)
+
     def resolve_package_path(self, raw_path: str) -> Path:
         path = Path(raw_path)
         return path if path.is_absolute() else self.package_share_dir / path
@@ -195,8 +212,7 @@ class OmniVLANavigationNode(Node):
             self._update_text_feature()
 
     def image_callback(self, msg: Image) -> None:
-        raw_image = np.frombuffer(msg.data, dtype=np.uint8).reshape((int(msg.height), int(msg.width), 3))
-        self.obs_image_bgr = cv2.cvtColor(raw_image, cv2.COLOR_RGB2BGR)
+        self.obs_image_bgr = image_msg_to_bgr(msg)
 
         cv_image = image_to_cv2(msg, self.clip_size)
         self.obs_image = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
@@ -319,9 +335,6 @@ class OmniVLANavigationNode(Node):
         else:
             linear_vel = dx / dt
             angular_vel = math.atan(dy / dx) / dt
-
-        linear_vel = float(np.clip(linear_vel, 0.0, 0.5))
-        angular_vel = float(np.clip(angular_vel, -1.0, 1.0))
 
         maxv = float(self.linear_max_vel)
         maxw = float(self.angular_max_vel)
