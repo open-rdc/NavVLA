@@ -57,7 +57,10 @@ class DataCollectionNode(Node):
         self.raw_data_buffer = []
         self.frame_count = 0
         self.temp_dir = None
-        self.max_buffer_size = 100
+        self.chunk_size = 1000
+        self.dataset_dir: Optional[Path] = None
+        self.traj_count = 0
+        self.traj_names = []
 
         self.latest_image: Optional[np.ndarray] = None
         self.latest_pose = np.array([0.0, 0.0, 0.0], dtype=np.float32)
@@ -129,9 +132,16 @@ class DataCollectionNode(Node):
             timestamp_str = time.strftime('%Y%m%d_%H%M%S')
             self.temp_dir = Path('/tmp') / f'navvla_recording_{timestamp_str}'
             self.temp_dir.mkdir(parents=True, exist_ok=True)
+            dataset_name = f'navvla_{timestamp_str}'
+            self.dataset_dir = self.save_dir / dataset_name
+            self.dataset_dir.mkdir(parents=True, exist_ok=True)
+            self.raw_data_buffer = []
             self.frame_count = 0
+            self.traj_count = 0
+            self.traj_names = []
             self.get_logger().info(f'🟢 recording {status}. Temp dir: {self.temp_dir}')
         else:
+            self._flush_buffer(final=True)
             self.get_logger().info(f' ⏸️ Recording {status}. Buffer size: {len(self.raw_data_buffer)}')
 
 
@@ -148,54 +158,74 @@ class DataCollectionNode(Node):
         )
                 
         pose_with_yaw = np.array([x, y, yaw], dtype=np.float32)
+        chunk_frame_id = len(self.raw_data_buffer)
 
         self.raw_data_buffer.append({
-            'frame_id' : self.frame_count,
+            'frame_id' : chunk_frame_id,
             'pose': pose_with_yaw.copy(),  # 12 bytes
         })
 
         if self.temp_dir is not None:
             ok = cv2.imwrite(
-                str(self.temp_dir / f'{self.frame_count:06d}.jpg'),
+                str(self.temp_dir / f'{chunk_frame_id:06d}.jpg'),
                 self.latest_image
             )
             if not ok:
                 self.raw_data_buffer.pop()  # pose と画像の対応を保つ
                 self.get_logger().error(
-                    f'❌Failed to write image {self.frame_count:06d}.jpg — frame dropped.'
+                    f'❌Failed to write image {chunk_frame_id:06d}.jpg — frame dropped.'
                 )
                 return
 
         self.frame_count += 1
 
-        if len(self.raw_data_buffer) > self.max_buffer_size:
-            self.raw_data_buffer.pop(0)
+        if len(self.raw_data_buffer) >= self.chunk_size:
+            self._flush_buffer(final=False)
         
         if self.frame_count % 10 == 0:
             self.get_logger().info(
                 f'📊 Collected {self.frame_count} frames. '
-                f'Buffer: {len(self.raw_data_buffer)} / {self.max_buffer_size}'
+                f'Buffer: {len(self.raw_data_buffer)} / {self.chunk_size}'
             )
 
+    def _reset_temp_dir(self) -> None:
+        if self.temp_dir is not None and self.temp_dir.exists():
+            try:
+                shutil.rmtree(self.temp_dir)
+            except Exception as e:
+                self.get_logger().error(f'❌Failed to clean temp dir: {e}')
+        timestamp_str = time.strftime('%Y%m%d_%H%M%S')
+        self.temp_dir = Path('/tmp') / f'navvla_recording_{timestamp_str}_{self.traj_count}'
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
 
-    def save_data(self) -> None:
-        if self.frame_count == 0:
-            self.get_logger().warn('⚠️No data collected. Nothing to save.')
-            return
-        
+    def _flush_buffer(self, final: bool) -> None:
         num_samples = len(self.raw_data_buffer)
-        if num_samples < self.min_frames:
+        if num_samples == 0:
+            return
+
+        if final and num_samples < self.min_frames:
             self.get_logger().warn(
                 f'⚠️Not enough data ({num_samples} frames). Need at least {self.min_frames}.'
             )
+            self.raw_data_buffer = []
+            if self.temp_dir is not None and self.temp_dir.exists():
+                try:
+                    shutil.rmtree(self.temp_dir)
+                except Exception as e:
+                    self.get_logger().error(f'❌Failed to clean temp dir: {e}')
+            self.temp_dir = None
             return
 
-        self.get_logger().info(f'💾Saving {num_samples} frames...')
+        if not final and num_samples < self.chunk_size:
+            return
 
-        data_dir = self.save_dir
-        timestamp_str = time.strftime('%Y%m%d_%H%M%S')
-        dataset_name = f'navvla_{timestamp_str}'
-        traj_dir = data_dir / dataset_name / 'traj_0'
+        if self.dataset_dir is None:
+            timestamp_str = time.strftime('%Y%m%d_%H%M%S')
+            self.dataset_dir = self.save_dir / f'navvla_{timestamp_str}'
+            self.dataset_dir.mkdir(parents=True, exist_ok=True)
+
+        traj_name = f'traj_{self.traj_count}'
+        traj_dir = self.dataset_dir / traj_name
 
         try:
             traj_dir.mkdir(parents=True, exist_ok=True)
@@ -203,19 +233,21 @@ class DataCollectionNode(Node):
             self.get_logger().error(f'❌Failed to create directory: {e}')
             return
 
-        if self.temp_dir is not None and self.temp_dir.exists():
-            for jpg_file in sorted(self.temp_dir.glob('*.jpg')):
-                frame_id = int(jpg_file.stem)
-                dst_path = traj_dir / f'{frame_id:06d}.jpg'
-                shutil.move(str(jpg_file), str(dst_path))
-
         positions = []
         yaws = []
 
-        for metadata in self.raw_data_buffer:
+        for out_index, metadata in enumerate(self.raw_data_buffer):
             pose = metadata['pose']
             positions.append([pose[0], pose[1]])
             yaws.append(pose[2])
+            if self.temp_dir is not None:
+                src_path = self.temp_dir / f"{metadata['frame_id']:06d}.jpg"
+                dst_path = traj_dir / f'{out_index}.jpg'
+                if src_path.exists():
+                    shutil.move(str(src_path), str(dst_path))
+                else:
+                    self.get_logger().error(f'❌Missing temp image: {src_path}')
+                    return
 
         traj_data = {
             'position': np.array(positions, dtype=np.float32),
@@ -226,12 +258,36 @@ class DataCollectionNode(Node):
             with open(traj_dir / 'traj_data.pkl', 'wb') as f:
                 pickle.dump(traj_data, f)
 
-            with open(data_dir / dataset_name / 'traj_names.txt', 'w') as f:
-                f.write('traj_0\n')
+            self.traj_names.append(traj_name)
+            with open(self.dataset_dir / 'traj_names.txt', 'w') as f:
+                f.write(''.join(f'{name}\n' for name in self.traj_names))
 
-            self.get_logger().info(f'Saved dataset to: {traj_dir.parent}')
+            self.get_logger().info(f'💾Saved {num_samples} frames to: {traj_dir}')
         except Exception as e:
             self.get_logger().error(f'❌Failed to save data: {e}')
+            return
+
+        self.traj_count += 1
+        self.raw_data_buffer = []
+        if final:
+            if self.temp_dir is not None and self.temp_dir.exists():
+                try:
+                    shutil.rmtree(self.temp_dir)
+                except Exception as e:
+                    self.get_logger().error(f'❌Failed to clean temp dir: {e}')
+            self.temp_dir = None
+        else:
+            self._reset_temp_dir()
+
+    def save_data(self) -> None:
+        if self.frame_count == 0 and not self.traj_names:
+            self.get_logger().warn('⚠️No data collected. Nothing to save.')
+            return
+
+        self._flush_buffer(final=True)
+
+        if self.dataset_dir is not None:
+            self.get_logger().info(f'Saved dataset to: {self.dataset_dir}')
 
         if self.temp_dir is not None and self.temp_dir.exists():
             try:
