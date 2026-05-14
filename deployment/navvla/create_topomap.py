@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import pickle
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -13,14 +14,10 @@ import yaml
 from torchvision import transforms
 
 
-class TopomapGenerator:
-    COMMAND_TO_ACTION = {
-        0: "roadside",
-        1: "straight",
-        2: "left",
-        3: "right",
-    }
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+class TopomapGenerator:
     def __init__(
         self,
         dataset_path: Path,
@@ -31,8 +28,6 @@ class TopomapGenerator:
         crop_size: int = 288,
     ) -> None:
         self.dataset_path = Path(dataset_path)
-        self.image_dir = self.dataset_path / "images"
-        self.command_dir = self.dataset_path / "commands"
         self.output_dir = Path(output_dir)
         self.output_image_dir = self.output_dir / "images"
         self.topomap_path = self.output_dir / "topomap.yaml"
@@ -52,11 +47,46 @@ class TopomapGenerator:
             ]
         )
 
-    def _load_command(self, image_path: Path) -> int:
-        command_path = self.command_dir / f"{image_path.stem}.csv"
-        with command_path.open("r", encoding="utf-8") as f:
-            line = f.readline().strip()
-        return int(float(line.split(",")[0]))
+    @staticmethod
+    def _image_sort_key(path: Path) -> tuple[int, str]:
+        try:
+            return int(path.stem), path.name
+        except ValueError:
+            return 0, path.name
+
+    def _load_trajectory_names(self) -> list[str]:
+        traj_names_path = self.dataset_path / "traj_names.txt"
+        if not traj_names_path.exists():
+            return [path.name for path in sorted(self.dataset_path.glob("traj_*")) if path.is_dir()]
+
+        with traj_names_path.open("r", encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+
+    def _load_trajectory(self, traj_name: str) -> tuple[list[Path], Optional[np.ndarray], Optional[np.ndarray]]:
+        traj_dir = self.dataset_path / traj_name
+        if not traj_dir.is_dir():
+            raise FileNotFoundError(f"Trajectory directory not found: {traj_dir}")
+
+        image_paths = sorted(
+            list(traj_dir.glob("*.jpg")) + list(traj_dir.glob("*.png")),
+            key=self._image_sort_key,
+        )
+        if not image_paths:
+            raise ValueError(f"No images found in trajectory: {traj_dir}")
+
+        traj_data_path = traj_dir / "traj_data.pkl"
+        if not traj_data_path.exists():
+            return image_paths, None, None
+
+        with traj_data_path.open("rb") as f:
+            traj_data = pickle.load(f)
+
+        positions = traj_data.get("position")
+        yaws = traj_data.get("yaw")
+        if positions is None or yaws is None:
+            return image_paths, None, None
+
+        return image_paths, np.asarray(positions), np.asarray(yaws)
 
     def _preprocess_image(self, image_path: Path) -> np.ndarray:
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
@@ -83,68 +113,75 @@ class TopomapGenerator:
         return feature_np.tolist()
 
     def generate(self) -> Path:
-        if not self.image_dir.is_dir():
-            raise FileNotFoundError(f"Dataset image directory not found: {self.image_dir}")
-        if not self.command_dir.is_dir():
-            raise FileNotFoundError(f"Dataset command directory not found: {self.command_dir}")
-
         self.output_image_dir.mkdir(parents=True, exist_ok=True)
-        image_paths = sorted(self.image_dir.glob("*.png"))
-        if not image_paths:
-            raise ValueError(f"No dataset images found: {self.image_dir}")
+        traj_names = self._load_trajectory_names()
+        if not traj_names:
+            raise ValueError(f"No trajectories found in dataset: {self.dataset_path}")
 
         nodes = []
-        for node_index, image_path in enumerate(image_paths[:: self.saved_step]):
-            command = self._load_command(image_path)
-            if command not in self.COMMAND_TO_ACTION:
-                raise ValueError(f"Unsupported command value: {command}")
+        for traj_name in traj_names:
+            image_paths, positions, yaws = self._load_trajectory(traj_name)
+            for image_path in image_paths[:: self.saved_step]:
+                node_index = len(nodes)
+                frame_index = self._image_sort_key(image_path)[0]
 
-            processed_image = self._preprocess_image(image_path)
-            output_image_name = f"img{node_index + 1:05d}.png"
-            cv2.imwrite(str(self.output_image_dir / output_image_name), processed_image)
-            nodes.append(
-                {
+                processed_image = self._preprocess_image(image_path)
+                output_image_name = f"img{node_index + 1:05d}.png"
+                cv2.imwrite(str(self.output_image_dir / output_image_name), processed_image)
+
+                node = {
                     "id": node_index,
                     "image": output_image_name,
                     "feature": self._extract_feature(processed_image),
-                    "action": self.COMMAND_TO_ACTION[command],
+                    "source": {
+                        "trajectory": traj_name,
+                        "frame": frame_index,
+                        "image": str(image_path.relative_to(self.dataset_path)),
+                    },
                 }
-            )
+                if positions is not None and yaws is not None and frame_index < len(positions) and frame_index < len(yaws):
+                    node["pose"] = {
+                        "x": float(positions[frame_index][0]),
+                        "y": float(positions[frame_index][1]),
+                        "yaw": float(yaws[frame_index]),
+                    }
+
+                nodes.append(node)
 
         for node_index, node in enumerate(nodes):
             target = node_index + 1 if node_index + 1 < len(nodes) else node_index
-            node["edges"] = [{"target": target, "action": node.pop("action")}]
+            node["edges"] = [{"target": target}]
 
         with self.topomap_path.open("w", encoding="utf-8") as f:
             yaml.safe_dump({"nodes": nodes}, f, sort_keys=False, allow_unicode=False)
         return self.topomap_path
 
 
-def resolve_cli_path(raw_path: str) -> Path:
+def resolve_cli_path(raw_path: str, base_path: Path = Path.cwd()) -> Path:
     path = Path(raw_path).expanduser()
-    return path if path.is_absolute() else Path.cwd() / path
+    return path if path.is_absolute() else base_path / path
 
 
 def main(args: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("dataset_path", help="Dataset directory generated by create_data.py")
+    parser.add_argument("dataset_path", help="Dataset directory generated by NavVLA data_collection.py")
     parser.add_argument(
         "--output-dir",
         default="deployment/config/topomap",
-        help="Directory where topomap.yaml and images/ are written, relative to the current working directory",
+        help="Directory where topomap.yaml and images/ are written, relative to the NavVLA repository root",
     )
     parser.add_argument(
         "--weights",
         default="deployment/weights/placenet.pt",
-        help="PlaceNet TorchScript weight path, relative to the current working directory",
+        help="PlaceNet TorchScript weight path, relative to the NavVLA repository root",
     )
     parser.add_argument("--saved-step", type=int, default=10, help="Use every Nth dataset image as a node")
     parser.add_argument("--crop-size", type=int, default=288, help="Center crop size before resizing to 85x85")
     parsed = parser.parse_args(args)
 
     dataset_path = resolve_cli_path(parsed.dataset_path)
-    output_dir = resolve_cli_path(parsed.output_dir)
-    weights_path = resolve_cli_path(parsed.weights)
+    output_dir = resolve_cli_path(parsed.output_dir, REPO_ROOT)
+    weights_path = resolve_cli_path(parsed.weights, REPO_ROOT)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = TopomapGenerator(
