@@ -7,6 +7,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 
 class Test:
@@ -30,7 +31,9 @@ class Test:
         total_batches = 0
 
         with torch.no_grad():
-            for step, raw_batch in enumerate(self.loader, start=1):
+            total_steps = len(self.loader) if max_steps is None else min(len(self.loader), max_steps)
+            progress = tqdm(self.loader, total=total_steps, desc="eval", leave=False)
+            for step, raw_batch in enumerate(progress, start=1):
                 if max_steps is not None and step > max_steps:
                     break
 
@@ -45,8 +48,10 @@ class Test:
                     batch["current_img"],
                 )
                 loss = F.l1_loss(action_pred, batch["actions"].float())
-                total_loss += float(loss.detach().cpu())
+                loss_value = float(loss.detach().cpu())
+                total_loss += loss_value
                 total_batches += 1
+                progress.set_postfix(loss=f"{loss_value:.4f}")
 
         if total_batches == 0:
             raise RuntimeError("Test loader produced no batches.")
