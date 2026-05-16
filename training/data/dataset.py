@@ -220,19 +220,24 @@ class EdgeNavigationDataset(Dataset):
             traj_len = len(self.read_positions(traj_data))
             end_time = traj_len - self.end_slack - action_horizon
 
-            if self.train_ratio is not None:
-                split_time = int(traj_len * self.train_ratio)
-                if self.split_type == "train":
-                    time_range = range(begin_time, min(split_time, end_time))
-                else:
-                    time_range = range(max(split_time, begin_time), end_time)
-            else:
-                time_range = range(begin_time, end_time)
+            all_times = [
+                t for t in range(begin_time, end_time)
+                if min(traj_len - self.end_slack - 1, t + action_horizon) > t
+            ]
 
-            for curr_time in time_range:
+            if self.train_ratio is not None:
+                # トラジェクトリ名をシードにすることでtrain/test両データセットで同じシャッフル順になる
+                rng = np.random.default_rng(seed=abs(hash(traj_name)) % (2**31))
+                shuffled = rng.permutation(len(all_times))
+                n_train = int(len(shuffled) * self.train_ratio)
+                indices = shuffled[:n_train] if self.split_type == "train" else shuffled[n_train:]
+                selected_times = [all_times[i] for i in indices]
+            else:
+                selected_times = all_times
+
+            for curr_time in selected_times:
                 max_goal_time = min(traj_len - self.end_slack - 1, curr_time + action_horizon)
-                if max_goal_time > curr_time:
-                    samples.append((traj_name, curr_time, max_goal_time))
+                samples.append((traj_name, curr_time, max_goal_time))
         return samples
 
     def __len__(self) -> int:
