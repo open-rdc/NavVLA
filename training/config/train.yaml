@@ -3,8 +3,8 @@ run_root_dir: training/runs
 
 epochs: 40
 batch_size: 28
-learning_rate: 1.0e-4
-weight_decay: 0.0
+learning_rate: 5.0e-5
+weight_decay: 1.0e-2
 num_workers: 8
 seed: 42
 

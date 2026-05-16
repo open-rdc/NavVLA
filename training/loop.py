@@ -210,6 +210,9 @@ def main_loop(
     print(f"[NavVLA] TensorBoard: tensorboard --logdir {tensorboard_dir}")
 
     total_epochs = int(train_cfg["epochs"])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_epochs - start_epoch + 1
+    )
     if start_epoch > total_epochs:
         print(f"[NavVLA] Nothing to train: start_epoch={start_epoch} > epochs={total_epochs}")
         writer.close()
@@ -219,10 +222,13 @@ def main_loop(
         train_metrics = Trainer.run(
             max_steps=None if max_train_steps is None else int(max_train_steps)
         )
-        print(f"[NavVLA] epoch={epoch} train={train_metrics}")
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"[NavVLA] epoch={epoch} train={train_metrics} lr={current_lr:.2e}")
         writer.add_scalar("loss/train_total", train_metrics["loss"], epoch)
         writer.add_scalar("loss/train_action", train_metrics["action_loss"], epoch)
         writer.add_scalar("loss/train_dist", train_metrics["dist_loss"], epoch)
+        writer.add_scalar("lr", current_lr, epoch)
         writer.flush()
 
         train_eval_losses = []
