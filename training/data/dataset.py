@@ -113,6 +113,8 @@ class EdgeNavigationDataset(Dataset):
         metric_waypoint_spacing: float = 1.0,
         clip_image_size: Tuple[int, int] = (224, 224),
         clip_model: str = DEFAULT_CLIP_MODEL,
+        train_ratio: float | None = None,
+        split_type: str = "train",
     ) -> None:
         self.data_folder = Path(data_folder)
         self.data_split_folder = Path(data_split_folder)
@@ -132,6 +134,8 @@ class EdgeNavigationDataset(Dataset):
         self.clip_model = str(clip_model)
         self.dummy_text_feature: torch.Tensor | None = None
         self.action_horizon = self.len_traj_pred * self.waypoint_spacing
+        self.train_ratio = train_ratio
+        self.split_type = split_type
         self.text_encoder = None
         self.prompt_cache: Dict[str, List[str]] = {}
         self.text_feature_cache: Dict[str, torch.Tensor] = {}
@@ -215,7 +219,17 @@ class EdgeNavigationDataset(Dataset):
             traj_data = self.load_trajectory(traj_name)
             traj_len = len(self.read_positions(traj_data))
             end_time = traj_len - self.end_slack - action_horizon
-            for curr_time in range(begin_time, end_time):
+
+            if self.train_ratio is not None:
+                split_time = int(traj_len * self.train_ratio)
+                if self.split_type == "train":
+                    time_range = range(begin_time, min(split_time, end_time))
+                else:
+                    time_range = range(max(split_time, begin_time), end_time)
+            else:
+                time_range = range(begin_time, end_time)
+
+            for curr_time in time_range:
                 max_goal_time = min(traj_len - self.end_slack - 1, curr_time + action_horizon)
                 if max_goal_time > curr_time:
                     samples.append((traj_name, curr_time, max_goal_time))

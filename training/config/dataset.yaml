@@ -4,10 +4,9 @@ normalize: true
 clip_model: ViT-B/32
 
 datasets:
-  sample:
-    data_folder: /home/<username>/nomad_dataset/sample
-    train: /home/<username>/data_splits/sample/train/ # path to train folder with traj_names.txt
-    test: /home/<username>/data_splits/sample/test/ # path to test folder with traj_names.txt
+  navvla_test:
+    data_folder: /home/orne/kasai_ws/src/NavVLA/training/dataset/navvla_20260515_111925
+    train_ratio: 0.7
     end_slack: 3 # because many trajectories end in collisions
     goals_per_obs: 1 # how many goals are sampled per observation
     waypoint_spacing: 1
