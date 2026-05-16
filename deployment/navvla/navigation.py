@@ -11,6 +11,7 @@ from typing import Deque, Optional, Tuple
 import cv2
 from ament_index_python.packages import get_package_share_directory
 
+import clip
 import numpy as np
 import torch
 from PIL import Image as PILImage
@@ -156,7 +157,7 @@ class OmniVLANavigationNode(Node):
             goal_pose = [0.0, 0.0, 1.0, 0.0]
 
         self.latest_prompt = "No language instruction"
-        self.feat_text = torch.zeros((1, 512), dtype=torch.float32, device=self.device)
+        self._update_text_feature()
 
         self.satellite_current = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
         self.satellite_goal = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
@@ -164,6 +165,12 @@ class OmniVLANavigationNode(Node):
         self.goal_image_tensor = transform_images_PIL_mask(goal_pil, self.mask_goal).to(self.device)
         self.goal_pose_tensor = torch.tensor([goal_pose], dtype=torch.float32, device=self.device)
         self.modality_tensor = torch.tensor([self.modality_id], dtype=torch.long, device=self.device)
+
+    def _update_text_feature(self) -> None:
+        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
+        token = clip.tokenize(prompt, truncate=True).to(self.device)
+        with torch.no_grad():
+            self.feat_text = self.text_encoder.encode_text(token)
 
     def resolve_package_path(self, raw_path: str) -> Path:
         path = Path(raw_path)
@@ -201,6 +208,8 @@ class OmniVLANavigationNode(Node):
 
     def prompt_callback(self, msg: String) -> None:
         self.latest_prompt = str(msg.data)
+        if self.use_prompt:
+            self._update_text_feature()
 
     def image_callback(self, msg: Image) -> None:
         self.obs_image_bgr = image_msg_to_bgr(msg)
@@ -231,6 +240,11 @@ class OmniVLANavigationNode(Node):
             clip_size=self.clip_size,
             device=self.device,
         )
+
+        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
+        token = clip.tokenize(prompt, truncate=True).to(self.device)
+        with torch.no_grad():
+            self.feat_text = self.text_encoder.encode_text(token)
 
         with torch.no_grad():
             action_pred, _, _ = self.model(
