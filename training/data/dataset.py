@@ -26,6 +26,7 @@ REQUIRED_KEYS = (
     "feat_text",
     "current_img",
     "actions",
+    "dist_to_goal",
 )
 
 KEY_ALIASES = {
@@ -130,6 +131,7 @@ class EdgeNavigationDataset(Dataset):
         self.clip_image_size = tuple(int(v) for v in clip_image_size)
         self.clip_model = str(clip_model)
         self.dummy_text_feature: torch.Tensor | None = None
+        self.action_horizon = self.len_traj_pred * self.waypoint_spacing
         self.text_encoder = None
         self.prompt_cache: Dict[str, List[str]] = {}
         self.text_feature_cache: Dict[str, torch.Tensor] = {}
@@ -392,6 +394,9 @@ class EdgeNavigationDataset(Dataset):
         map_images = self.build_map_images(obs_images, goal_image)
         feat_text = self.build_language_feature(traj_name, traj_data, curr_time)
 
+        dist_to_goal = torch.as_tensor(
+            (goal_time - curr_time) / self.action_horizon, dtype=torch.float32
+        )
         return {
             "obs_images": obs_images,
             "goal_pose": goal_pose,
@@ -401,6 +406,7 @@ class EdgeNavigationDataset(Dataset):
             "feat_text": feat_text,
             "current_img": current_img,
             "actions": actions,
+            "dist_to_goal": dist_to_goal,
         }
 
 

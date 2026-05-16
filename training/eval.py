@@ -28,6 +28,8 @@ class Test:
         self.model.eval()
 
         total_loss = 0.0
+        total_action_loss = 0.0
+        total_dist_loss = 0.0
         total_batches = 0
 
         with torch.no_grad():
@@ -38,7 +40,7 @@ class Test:
                     break
 
                 batch = {key: value.to(self.device) for key, value in raw_batch.items()}
-                action_pred, _, _ = self.model(
+                action_pred, dist_pred, _ = self.model(
                     batch["obs_images"],
                     batch["goal_pose"].float(),
                     batch["map_images"],
@@ -47,13 +49,20 @@ class Test:
                     batch["feat_text"].float(),
                     batch["current_img"],
                 )
-                loss = F.l1_loss(action_pred, batch["actions"].float())
-                loss_value = float(loss.detach().cpu())
-                total_loss += loss_value
+                action_loss = F.l1_loss(action_pred, batch["actions"].float())
+                dist_loss = F.l1_loss(dist_pred.squeeze(-1), batch["dist_to_goal"].float())
+                loss = action_loss + dist_loss
+                total_loss += float(loss.detach().cpu())
+                total_action_loss += float(action_loss.detach().cpu())
+                total_dist_loss += float(dist_loss.detach().cpu())
                 total_batches += 1
-                progress.set_postfix(loss=f"{loss_value:.4f}")
+                progress.set_postfix(loss=f"{float(loss.detach().cpu()):.4f}")
 
         if total_batches == 0:
             raise RuntimeError("Test loader produced no batches.")
 
-        return {"loss": total_loss / total_batches}
+        return {
+            "loss": total_loss / total_batches,
+            "action_loss": total_action_loss / total_batches,
+            "dist_loss": total_dist_loss / total_batches,
+        }

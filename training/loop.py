@@ -221,6 +221,8 @@ def main_loop(
         )
         print(f"[NavVLA] epoch={epoch} train={train_metrics}")
         writer.add_scalar("loss/train_total", train_metrics["loss"], epoch)
+        writer.add_scalar("loss/train_action", train_metrics["action_loss"], epoch)
+        writer.add_scalar("loss/train_dist", train_metrics["dist_loss"], epoch)
         writer.flush()
 
         train_eval_losses = []
