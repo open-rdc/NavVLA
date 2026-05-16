@@ -129,17 +129,24 @@ class DataCollectionNode(Node):
         status = 'STARTED' if self.is_recording else 'PAUSED'
 
         if self.is_recording:
-            timestamp_str = time.strftime('%Y%m%d_%H%M%S')
-            self.temp_dir = Path('/tmp') / f'navvla_recording_{timestamp_str}'
-            self.temp_dir.mkdir(parents=True, exist_ok=True)
-            dataset_name = f'navvla_{timestamp_str}'
-            self.dataset_dir = self.save_dir / dataset_name
-            self.dataset_dir.mkdir(parents=True, exist_ok=True)
             self.raw_data_buffer = []
-            self.frame_count = 0
-            self.traj_count = 0
-            self.traj_names = []
-            self.get_logger().info(f'🟢 recording {status}. Temp dir: {self.temp_dir}')
+            if self.dataset_dir is None:
+                timestamp_str = time.strftime('%Y%m%d_%H%M%S')
+                dataset_name = f'navvla_{timestamp_str}'
+                self.dataset_dir = self.save_dir / dataset_name
+                self.dataset_dir.mkdir(parents=True, exist_ok=True)
+                self.frame_count = 0
+                self.traj_count = 0
+                self.traj_names = []
+                self.temp_dir = Path('/tmp') / f'navvla_recording_{timestamp_str}_{self.traj_count}'
+                self.temp_dir.mkdir(parents=True, exist_ok=True)
+                self.get_logger().info(f'🟢 recording {status}. Temp dir: {self.temp_dir}')
+            else:
+                self._reset_temp_dir()
+                self.get_logger().info(
+                    f'🟢 recording RESUMED. Dataset: {self.dataset_dir}. '
+                    f'Temp dir: {self.temp_dir}'
+                )
         else:
             self._flush_buffer(final=True)
             self.get_logger().info(f' ⏸️ Recording {status}. Buffer size: {len(self.raw_data_buffer)}')
