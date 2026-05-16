@@ -1,14 +1,14 @@
 weights_path: training/weights/omnivla-edge.pth
 run_root_dir: training/runs
 
-epochs: 10
-batch_size: 4
+epochs: 40
+batch_size: 28
 learning_rate: 1.0e-4
 weight_decay: 0.0
-num_workers: 4
+num_workers: 8
 seed: 42
 
-save_freq: 1
 eval_freq: 1
 max_train_steps: null
 max_test_steps: null
+resume_from: null
