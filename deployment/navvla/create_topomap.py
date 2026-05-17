@@ -97,8 +97,7 @@ class TopomapGenerator:
         side = min(height, width, self.crop_size)
         top = (height - side) // 2
         left = (width - side) // 2
-        cropped = image[top : top + side, left : left + side]
-        return cv2.resize(cropped, (85, 85), interpolation=cv2.INTER_AREA)
+        return image[top : top + side, left : left + side]
 
     def _extract_feature(self, image_bgr: np.ndarray) -> Sequence[float]:
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -125,14 +124,17 @@ class TopomapGenerator:
                 node_index = len(nodes)
                 frame_index = self._image_sort_key(image_path)[0]
 
-                processed_image = self._preprocess_image(image_path)
+                cropped_image = self._preprocess_image(image_path)
+
+                # 保存用は cv2.resize で 85x85 に縮小
+                save_image = cv2.resize(cropped_image, (85, 85), interpolation=cv2.INTER_AREA)
                 output_image_name = f"img{node_index + 1:05d}.png"
-                cv2.imwrite(str(self.output_image_dir / output_image_name), processed_image)
+                cv2.imwrite(str(self.output_image_dir / output_image_name), save_image)
 
                 node = {
                     "id": node_index,
                     "image": output_image_name,
-                    "feature": self._extract_feature(processed_image),
+                    "feature": self._extract_feature(cropped_image),
                     "source": {
                         "trajectory": traj_name,
                         "frame": frame_index,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -29,6 +29,9 @@ class TopologicalNavigator:
         device: torch.device,
         image_size: Tuple[int, int],
         crop_size: int = 288,
+        delta: float = 5.0,
+        window_lower: int = -1,
+        window_upper: int = 10,
     ) -> None:
         self.topomap_path = Path(topomap_path)
         self.image_dir = Path(image_dir)
@@ -36,6 +39,17 @@ class TopologicalNavigator:
         self.device = device
         self.image_size = (int(image_size[0]), int(image_size[1]))
         self.crop_size = int(crop_size)
+
+        # Bayesian filter パラメータ
+        self.delta = float(delta)
+        self.window_lower = int(window_lower)
+        self.window_upper = int(window_upper)
+        # 遷移モデル：ウィンドウ内の移動を等確率とする一様分布
+        self.transition = np.ones(self.window_upper - self.window_lower, dtype=np.float32)
+
+        # 信念・lambdaは最初のフレームで初期化
+        self.belief: Optional[np.ndarray] = None
+        self.lambda1: float = 0.0
 
         self.nodes = self._load_topomap(self.topomap_path)
         self.node_index_by_id = {node.node_id: idx for idx, node in enumerate(self.nodes)}
@@ -103,11 +117,57 @@ class TopologicalNavigator:
             raise RuntimeError("PlaceNet returned a zero-norm feature.")
         return feature_np / norm
 
+    def _compute_distances(self, query_feature: np.ndarray) -> np.ndarray:
+        # L2正規化済みのためdot積=コサイン類似度 → コサイン距離に変換
+        dots = np.clip(np.dot(self.feature_matrix, query_feature), -1.0, 1.0)
+        return np.sqrt(2.0 - 2.0 * dots)
+
+    def _observation_likelihood(self, query_feature: np.ndarray) -> np.ndarray:
+        return np.exp(-self.lambda1 * self._compute_distances(query_feature))
+
+    def _initialize_belief(self, query_feature: np.ndarray) -> None:
+        dists = self._compute_distances(query_feature)
+        descriptor_quantiles = np.quantile(dists, [0.025, 0.975])
+        self.lambda1 = np.log(self.delta) / (descriptor_quantiles[1] - descriptor_quantiles[0])
+        self.belief = np.exp(-self.lambda1 * dists)
+        self.belief /= self.belief.sum()
+
+    def _update_belief(self, query_feature: np.ndarray) -> None:
+        # ===== Prediction ステップ：遷移モデルで信念を前進方向に伝播 =====
+        if self.window_lower < 0:
+            conv_ind_l = abs(self.window_lower)
+            conv_ind_h = len(self.belief) + abs(self.window_lower)
+            bel_ind_l, bel_ind_h = 0, len(self.belief)
+        else:
+            conv_ind_l, conv_ind_h = 0, len(self.belief) - self.window_lower
+            bel_ind_l, bel_ind_h = self.window_lower, len(self.belief)
+
+        belief_pad = np.pad(self.belief, len(self.transition) - 1, mode="symmetric")
+        conv = np.convolve(belief_pad, self.transition, mode="valid")
+        self.belief[bel_ind_l:bel_ind_h] = conv[conv_ind_l:conv_ind_h]
+
+        if self.window_lower > 0:
+            self.belief[: self.window_lower] = 0.0
+
+        # ===== Measurement ステップ：観測尤度でベイズ更新 =====
+        self.belief *= self._observation_likelihood(query_feature)
+        self.belief /= self.belief.sum()
+
     def estimate_current_node(self, image_bgr: np.ndarray) -> Tuple[int, float]:
         query_feature = self.extract_feature(image_bgr)
-        scores = np.dot(self.feature_matrix, query_feature)
-        best_index = int(np.argmax(scores))
-        return best_index, float(scores[best_index])
+
+        if self.belief is None:
+            self._initialize_belief(query_feature)
+        else:
+            self._update_belief(query_feature)
+
+        best_index = int(np.argmax(self.belief))
+        return best_index, float(self.belief[best_index])
+
+    def reset(self) -> None:
+        """信念を初期化する。環境が大きく変わった場合や再スタート時に呼ぶ。"""
+        self.belief = None
+        self.lambda1 = 0.0
 
     def select_goal_node(self, current_index: int) -> int:
         current_node = self.nodes[current_index]
