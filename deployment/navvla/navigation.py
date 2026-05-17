@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from collections import deque
 from pathlib import Path
 from typing import Deque, Optional, Tuple
@@ -15,11 +16,22 @@ import numpy as np
 import torch
 from PIL import Image as PILImage
 
+_THIS_FILE = Path(__file__).resolve()
+_REPO_ROOT_CANDIDATES = [
+    _THIS_FILE.parents[2],
+    _THIS_FILE.parents[4] / "src" / "NavVLA" if len(_THIS_FILE.parents) > 4 else None,
+]
+for _repo_root in reversed([path for path in _REPO_ROOT_CANDIDATES if path is not None and (path / "OmniVLA").exists()]):
+    for _path in (_repo_root, _repo_root / "OmniVLA", _repo_root / "OmniVLA" / "inference"):
+        if str(_path) not in sys.path:
+            sys.path.insert(0, str(_path))
+
 from OmniVLA.inference.utils_policy import (
     load_model,
     transform_images_PIL_mask,
 )
-from .preprocess import build_mask, build_omnivla_edge_inputs, image_to_cv2, load_yaml
+from .preprocess import build_mask, build_omnivla_edge_inputs, image_msg_to_bgr, image_to_cv2, load_yaml
+from .toponav import TopologicalNavigator
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
@@ -41,6 +53,7 @@ class OmniVLANavigationNode(Node):
         self.autonomous_flag = False
         self.context_queue = []
         self.obs_image = None
+        self.obs_image_bgr = None
         self.package_share_dir = package_share_dir
 
         self.nav_cfg = load_yaml(nav_config_path)
@@ -49,6 +62,7 @@ class OmniVLANavigationNode(Node):
         self.init_params()
         self.init_model()
         self.init_model_modality()
+        self.init_toponav()
 
         self.image_sub = self.create_subscription(Image, "/image_raw", self.image_callback, 10)
         self.autonomous_sub = self.create_subscription(Bool, "/autonomous", self.autonomous_callback, 10)
@@ -151,7 +165,43 @@ class OmniVLANavigationNode(Node):
         self.goal_image_tensor = transform_images_PIL_mask(goal_pil, self.mask_goal).to(self.device)
         self.goal_pose_tensor = torch.tensor([goal_pose], dtype=torch.float32, device=self.device)
         self.modality_tensor = torch.tensor([self.modality_id], dtype=torch.long, device=self.device)
-        
+
+    def _update_text_feature(self) -> None:
+        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
+        token = clip.tokenize(prompt, truncate=True).to(self.device)
+        with torch.no_grad():
+            self.feat_text = self.text_encoder.encode_text(token)
+
+    def resolve_package_path(self, raw_path: str) -> Path:
+        path = Path(raw_path)
+        return path if path.is_absolute() else self.package_share_dir / path
+
+    def init_toponav(self) -> None:
+        self.use_toponav = bool(self.nav_cfg.get("use_toponav", False))
+        self.toponav = None
+        self.toponav_current_index = None
+        self.toponav_goal_index = None
+        self.toponav_min_score = float(self.nav_cfg.get("toponav_min_score", -1.0))
+
+        if not self.use_toponav:
+            return
+
+        if not self.use_goal_image:
+            raise ValueError("Toponav requires a modality_id that uses goal_image.")
+
+        topomap_path = self.resolve_package_path(str(self.nav_cfg.get("topomap_path", "config/topomap/topomap.yaml")))
+        image_dir = self.resolve_package_path(str(self.nav_cfg.get("topomap_image_dir", "config/topomap/images")))
+        weight_path = self.resolve_package_path(str(self.nav_cfg.get("placenet_weight_path", "deployment/weights/placenet.pt")))
+
+        self.toponav = TopologicalNavigator(
+            topomap_path=topomap_path,
+            image_dir=image_dir,
+            weight_path=weight_path,
+            device=self.device,
+            image_size=self.goal_size,
+            crop_size=int(self.nav_cfg.get("toponav_crop_size", 288)),
+        )
+        self.get_logger().info(f"Toponav loaded: nodes={len(self.toponav.nodes)}, topomap={topomap_path}")
 
     def autonomous_callback(self, msg: Bool) -> None:
         self.autonomous_flag = bool(msg.data)
@@ -162,6 +212,8 @@ class OmniVLANavigationNode(Node):
             self._update_text_feature()
 
     def image_callback(self, msg: Image) -> None:
+        self.obs_image_bgr = image_msg_to_bgr(msg)
+
         cv_image = image_to_cv2(msg, self.clip_size)
         self.obs_image = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
 
@@ -175,6 +227,8 @@ class OmniVLANavigationNode(Node):
             self.context_queue.pop(0)
         if len(self.context_queue) < self.context_size + 1:
             return
+
+        self.update_toponav_goal()
 
         obs_images, map_images, cur_large_img = build_omnivla_edge_inputs(
             context_queue=self.context_queue,
@@ -208,6 +262,31 @@ class OmniVLANavigationNode(Node):
         self.publisher_path(waypoints)
         self.publisher_command_velocity(linear_vel, angular_vel)
 
+    def update_toponav_goal(self) -> None:
+        if self.toponav is None or self.obs_image_bgr is None:
+            return
+
+        current_index, score = self.toponav.estimate_current_node(self.obs_image_bgr)
+        if score < self.toponav_min_score:
+            self.get_logger().warn(
+                f"Toponav score below threshold: score={score:.3f}, threshold={self.toponav_min_score:.3f}"
+            )
+            return
+
+        goal_index = self.toponav.select_goal_node(current_index)
+        if current_index == self.toponav_current_index and goal_index == self.toponav_goal_index:
+            return
+
+        goal_pil = self.toponav.load_goal_image(goal_index)
+        self.goal_image_tensor = transform_images_PIL_mask(goal_pil, self.mask_goal).to(self.device)
+        self.toponav_current_index = current_index
+        self.toponav_goal_index = goal_index
+        current_node = self.toponav.nodes[current_index]
+        goal_node = self.toponav.nodes[goal_index]
+        self.get_logger().info(
+            "Toponav goal updated: "
+            f"current_id={current_node.node_id}, goal_id={goal_node.node_id}, score={score:.3f}"
+        )
 
     def publisher_path(self, waypoints: np.ndarray) -> None:
         msg = NavPath()
@@ -256,9 +335,6 @@ class OmniVLANavigationNode(Node):
         else:
             linear_vel = dx / dt
             angular_vel = math.atan(dy / dx) / dt
-
-        linear_vel = float(np.clip(linear_vel, 0.0, 0.5))
-        angular_vel = float(np.clip(angular_vel, -1.0, 1.0))
 
         maxv = float(self.linear_max_vel)
         maxw = float(self.angular_max_vel)

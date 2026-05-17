@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import TYPE_CHECKING
 from typing import Dict, List, Tuple
 
@@ -9,6 +10,16 @@ import numpy as np
 import torch
 import yaml
 from PIL import Image as PILImage
+
+_THIS_FILE = Path(__file__).resolve()
+_REPO_ROOT_CANDIDATES = [
+    _THIS_FILE.parents[2],
+    _THIS_FILE.parents[4] / "src" / "NavVLA" if len(_THIS_FILE.parents) > 4 else None,
+]
+for _repo_root in reversed([path for path in _REPO_ROOT_CANDIDATES if path is not None and (path / "OmniVLA").exists()]):
+    for _path in (_repo_root, _repo_root / "OmniVLA", _repo_root / "OmniVLA" / "inference"):
+        if str(_path) not in sys.path:
+            sys.path.insert(0, str(_path))
 
 from OmniVLA.inference.utils_policy import transform_images_PIL_mask, transform_images_map
 
@@ -45,9 +56,44 @@ def build_mask(size: Tuple[int, int], use_mask: bool, mask_path: str) -> np.ndar
     return loaded.astype(np.float32)
 
 
+def image_msg_to_bgr(msg: "Image") -> np.ndarray:
+    encoding = msg.encoding.lower()
+    channels_by_encoding = {
+        "bgr8": 3,
+        "rgb8": 3,
+        "bgra8": 4,
+        "rgba8": 4,
+        "mono8": 1,
+        "8uc1": 1,
+        "8uc3": 3,
+        "8uc4": 4,
+        "yuv422_yuy2": 2,
+        "yuyv": 2,
+        "yuy2": 2,
+    }
+    if encoding not in channels_by_encoding:
+        raise ValueError(f"Unsupported image encoding: {msg.encoding}")
+
+    channels = channels_by_encoding[encoding]
+    row = np.frombuffer(msg.data, dtype=np.uint8).reshape(int(msg.height), int(msg.step))
+    image = row[:, : int(msg.width) * channels].reshape(int(msg.height), int(msg.width), channels)
+
+    if encoding in ("bgr8", "8uc3"):
+        return image.copy()
+    if encoding == "rgb8":
+        return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    if encoding == "bgra8":
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    if encoding == "rgba8":
+        return cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+    if encoding in ("yuv422_yuy2", "yuyv", "yuy2"):
+        return cv2.cvtColor(image, cv2.COLOR_YUV2BGR_YUY2)
+
+    return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+
 def image_to_cv2(msg: "Image", output_size: Tuple[int, int]) -> np.ndarray:
-    frame = np.frombuffer(msg.data, dtype=np.uint8).reshape((int(msg.height), int(msg.width), 3))
-    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    frame = image_msg_to_bgr(msg)
 
     side = min(frame.shape[0], frame.shape[1])
     offset_y = (frame.shape[0] - side) // 2
