@@ -47,6 +47,7 @@ def save_checkpoint(
     model_path: Path,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     epoch: int,
     train_cfg: Dict[str, object],
     network_cfg: Dict[str, object],
@@ -59,6 +60,7 @@ def save_checkpoint(
             "epoch": epoch,
             "state_dict": state_dict,
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "train_cfg": train_cfg,
             "network_cfg": network_cfg,
             "dataset_cfg": dataset_cfg,
@@ -175,6 +177,10 @@ def main_loop(
         weight_decay=float(train_cfg["weight_decay"]),
     )
 
+    total_epochs = int(train_cfg["epochs"])
+    # base_lrs を fresh の lr=learning_rate に固定するため、resume 前に構築
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_epochs)
+
     start_epoch = 1
     resume_from = train_cfg.get("resume_from")
     if resume_from:
@@ -187,6 +193,7 @@ def main_loop(
             optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
         if isinstance(resume_checkpoint, dict) and "epoch" in resume_checkpoint:
             start_epoch = int(resume_checkpoint["epoch"]) + 1
+        scheduler.load_state_dict(resume_checkpoint["scheduler_state_dict"])
         print(f"[NavVLA] Resumed from {resume_path} at epoch={start_epoch - 1}")
 
     Trainer = Train(model=model, loader=train_loader, optimizer=optimizer, device=device)
@@ -209,10 +216,6 @@ def main_loop(
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
     print(f"[NavVLA] TensorBoard: tensorboard --logdir {tensorboard_dir}")
 
-    total_epochs = int(train_cfg["epochs"])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_epochs - start_epoch + 1
-    )
     if start_epoch > total_epochs:
         print(f"[NavVLA] Nothing to train: start_epoch={start_epoch} > epochs={total_epochs}")
         writer.close()
@@ -268,6 +271,7 @@ def main_loop(
                     model_path=run_dir / "model_best.pth",
                     model=model,
                     optimizer=optimizer,
+                    scheduler=scheduler,
                     epoch=epoch,
                     train_cfg=train_cfg,
                     network_cfg=network_cfg,
@@ -280,6 +284,7 @@ def main_loop(
             model_path=run_dir / "model_latest.pth",
             model=model,
             optimizer=optimizer,
+            scheduler=scheduler,
             epoch=epoch,
             train_cfg=train_cfg,
             network_cfg=network_cfg,
