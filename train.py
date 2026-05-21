@@ -24,6 +24,8 @@ def create_dataloaders(
     if not isinstance(datasets_cfg, dict) or not datasets_cfg:
         raise ValueError("training/config/dataset.yaml must contain a non-empty datasets mapping.")
 
+    _TRAIN_RATIO = 0.7
+
     train_datasets = []
     train_eval_datasets = {}
     test_datasets = {}
@@ -40,12 +42,23 @@ def create_dataloaders(
         missing = [key for key in required_data_keys if key not in data_config]
         if missing:
             raise ValueError(f"Missing required keys for dataset {dataset_name}: {missing}")
-        for data_split_type in ("train", "test"):
-            if data_split_type not in data_config:
+
+        data_folder = Path(data_config["data_folder"])
+        all_trajs = sorted(
+            d.name for d in data_folder.iterdir()
+            if d.is_dir() and (d / "traj_data.pkl").exists()
+        )
+        if not all_trajs:
+            raise ValueError(f"No valid trajectories found in {data_folder}")
+        n = int(len(all_trajs) * _TRAIN_RATIO)
+        splits = {"train": all_trajs[:n], "test": all_trajs[n:]}
+
+        for data_split_type, traj_names in splits.items():
+            if not traj_names:
                 continue
             dataset = EdgeNavigationDataset(
                 data_folder=data_config["data_folder"],
-                data_split_folder=data_config[data_split_type],
+                traj_names=traj_names,
                 dataset_name=str(dataset_name),
                 image_size=tuple(dataset_cfg["image_size"]),
                 waypoint_spacing=int(data_config["waypoint_spacing"]),
@@ -63,9 +76,9 @@ def create_dataloaders(
             )
             if data_split_type == "train":
                 train_datasets.append(dataset)
-                train_eval_datasets[f"{dataset_name}_{data_split_type}"] = dataset
+                train_eval_datasets[f"{dataset_name}_train"] = dataset
             else:
-                test_datasets[f"{dataset_name}_{data_split_type}"] = dataset
+                test_datasets[f"{dataset_name}_test"] = dataset
 
     if not train_datasets:
         raise ValueError("No train datasets were configured in dataset.yaml.")
@@ -150,6 +163,11 @@ def main() -> int:
         raise ValueError(f"YAML root must be a mapping: {network_cfg_path}")
     if not isinstance(dataset_cfg, dict):
         raise ValueError(f"YAML root must be a mapping: {dataset_cfg_path}")
+
+    data_root = navvla_root / "data"
+    for ds_cfg in (dataset_cfg.get("datasets") or {}).values():
+        p = Path(str(ds_cfg["data_folder"]))
+        ds_cfg["data_folder"] = str(data_root / p)
 
     train_loader, train_eval_dataloaders, test_dataloaders = create_dataloaders(
         train_cfg=train_cfg,
