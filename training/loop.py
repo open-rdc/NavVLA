@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from peft import LoraConfig, get_peft_model, PeftModel
 
 from OmniVLA.inference.model_omnivla_edge import OmniVLA_edge
 from training.eval import Test
@@ -117,8 +118,38 @@ def main_loop(
     model.load_state_dict(state_dict, strict=True)
     model = model.to(device)
 
+    lora_rank    = int(train_cfg.get("lora_rank", 16))
+    lora_alpha   = int(train_cfg.get("lora_alpha", lora_rank))
+    lora_dropout = float(train_cfg.get("lora_dropout", 0.0))
+    target_modules = list(train_cfg.get("lora_target_modules", [
+        "out_proj", "linear1", "linear2",
+        "compress_obs_enc", "compress_goal_enc_lan",
+    ]))
+    modules_to_save = list(train_cfg.get("lora_modules_to_save", [
+        "action_predictor", "dist_predictor",
+    ]))
+
+    lora_cfg = LoraConfig(
+        r=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        target_modules=target_modules,
+        modules_to_save=modules_to_save,
+        bias="none",
+        init_lora_weights="gaussian",
+    )
+    model = get_peft_model(model, lora_cfg)
+
+    # decoder.output_layers は nn.ModuleList のため ModulesToSaveWrapper でラップできない。
+    # get_peft_model() 後に手動で requires_grad を戻す。
+    for name, param in model.named_parameters():
+        if "decoder.output_layers" in name:
+            param.requires_grad_(True)
+
+    model.print_trainable_parameters()
+
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        filter(lambda p: p.requires_grad, model.parameters()),
         lr=float(train_cfg["learning_rate"]),
         weight_decay=float(train_cfg["weight_decay"]),
     )
@@ -173,12 +204,20 @@ def main_loop(
 
         if epoch % save_freq == 0:
             run_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_path = run_dir / "model_latest.pth"
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"[NavVLA] saved={checkpoint_path}")
+            adapter_dir = run_dir / "lora_adapter_latest"
+            model.save_pretrained(str(adapter_dir))
+            print(f"[NavVLA] saved={adapter_dir}")
 
         writer.close()
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), run_dir / "model_latest.pth")
+    # 1. LoRA アダプタを保存（再利用・検査用）
+    model.save_pretrained(str(run_dir / "lora_adapter_final"))
+    print(f"[NavVLA] adapter saved → {run_dir / 'lora_adapter_final'}")
+
+    # 2. アダプタをベース重みにマージして .pth として保存
+    merged_model = model.merge_and_unload()
+    merged_path = run_dir / "omnivla-edge-lora-merged.pth"
+    torch.save(merged_model.state_dict(), str(merged_path))
+    print(f"[NavVLA] merged weights saved → {merged_path}")
     return 0
