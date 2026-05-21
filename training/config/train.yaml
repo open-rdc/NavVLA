@@ -2,7 +2,7 @@ weights_path: training/weights/omnivla-edge.pth
 run_root_dir: training/runs
 
 epochs: 10
-batch_size: 4
+batch_size: 64
 learning_rate: 1.0e-4
 weight_decay: 0.0
 num_workers: 4
@@ -12,3 +12,17 @@ save_freq: 1
 eval_freq: 1
 max_train_steps: null
 max_test_steps: null
+
+# LoRA 設定
+lora_rank: 16          # 低ランク次元 r (4/8/16/32 から選択)
+lora_alpha: 16         # スケーリング係数 (通常は lora_rank と同値)
+lora_dropout: 0.05     # ドロップアウト率
+lora_target_modules:   # 適用対象モジュール名 (後方一致でマッチング)
+  - out_proj
+  - linear1
+  - linear2
+  - compress_obs_enc
+  - compress_goal_enc_lan
+lora_modules_to_save:  # 全パラメータ訓練するモジュール
+  - action_predictor
+  - dist_predictor
