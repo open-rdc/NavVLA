@@ -26,6 +26,10 @@ for _repo_root in reversed([path for path in _REPO_ROOT_CANDIDATES if path is no
         if str(_path) not in sys.path:
             sys.path.insert(0, str(_path))
 
+_INSTALLED_INFERENCE_DIR = _THIS_FILE.parents[1] / "OmniVLA" / "inference"
+if _INSTALLED_INFERENCE_DIR.exists() and str(_INSTALLED_INFERENCE_DIR) not in sys.path:
+    sys.path.insert(0, str(_INSTALLED_INFERENCE_DIR))
+
 from OmniVLA.inference.utils_policy import (
     load_model,
     transform_images_PIL_mask,
@@ -75,7 +79,9 @@ class OmniVLANavigationNode(Node):
 
     def init_params(self) -> None:
         self.context_size = self.nav_cfg.get("context_size", 5)
-        self.waypoint_spacing = self.nav_cfg.get("metric_waypoint_spacing", 0.1)
+        self.metric_waypoint_spacing = self.nav_cfg.get("metric_waypoint_spacing", 0.1)
+        self.waypoint_spacing = self.nav_cfg.get("waypoint_spacing", 1)
+        self.action_scale = self.metric_waypoint_spacing * self.waypoint_spacing
         self.waypoint_select = self.nav_cfg.get("waypoint_select", 4)
         self.linear_max_vel = self.nav_cfg.get("linear_max_vel", 0.3)
         self.angular_max_vel = self.nav_cfg.get("angular_max_vel", 0.3)
@@ -200,6 +206,9 @@ class OmniVLANavigationNode(Node):
             device=self.device,
             image_size=self.goal_size,
             crop_size=int(self.nav_cfg.get("toponav_crop_size", 288)),
+            delta=float(self.nav_cfg.get("toponav_delta", 5.0)),
+            window_lower=int(self.nav_cfg.get("toponav_window_lower", -1)),
+            window_upper=int(self.nav_cfg.get("toponav_window_upper", 10)),
         )
         self.get_logger().info(f"Toponav loaded: nodes={len(self.toponav.nodes)}, topomap={topomap_path}")
 
@@ -296,8 +305,8 @@ class OmniVLANavigationNode(Node):
         for wp in waypoints:
             pose = PoseStamped()
             pose.header = msg.header
-            x = float(wp[0]) * self.waypoint_spacing
-            y = float(wp[1]) * self.waypoint_spacing
+            x = float(wp[0]) * self.action_scale
+            y = float(wp[1]) * self.action_scale
             yaw = math.atan2(float(wp[3]), float(wp[2]))
 
             pose.pose.position.x = x
@@ -320,8 +329,8 @@ class OmniVLANavigationNode(Node):
         selected = max(0, min(self.waypoint_select, waypoints.shape[0] - 1))
 
         dx, dy, hx, hy = [float(v) for v in waypoints[selected]]
-        dx *= self.waypoint_spacing
-        dy *= self.waypoint_spacing
+        dx *= self.action_scale
+        dy *= self.action_scale
 
         eps = 1e-8
         dt = 1.0 / 3.0
