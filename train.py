@@ -24,7 +24,7 @@ def create_dataloaders(
     if not isinstance(datasets_cfg, dict) or not datasets_cfg:
         raise ValueError("training/config/dataset.yaml must contain a non-empty datasets mapping.")
 
-    _TRAIN_RATIO = 0.7
+    TRAIN_RATIO = 0.7
 
     train_datasets = []
     train_eval_datasets = {}
@@ -50,7 +50,7 @@ def create_dataloaders(
         )
         if not all_trajs:
             raise ValueError(f"No valid trajectories found in {data_folder}")
-        n = int(len(all_trajs) * _TRAIN_RATIO)
+        n = int(len(all_trajs) * TRAIN_RATIO)
         splits = {"train": all_trajs[:n], "test": all_trajs[n:]}
 
         for data_split_type, traj_names in splits.items():
