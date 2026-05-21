@@ -8,7 +8,8 @@ datasets:
     data_folder: <dataset_name>
     end_slack: 3 # because many trajectories end in collisions
     goals_per_obs: 1 # how many goals are sampled per observation
-    waypoint_spacing: 1
+    waypoint_spacing: 1 # moveing distance between waypoints in one meters
+    metric_waypoint_spacing: 1.0 # frame number between waypoints in one meters
     modality_id: 7
 
 # modality flags (pose/image/language) are derived automatically from modality_id
