@@ -29,8 +29,8 @@ class DataCreator(Node):
         self.latest_odom = None
         self.latest_image = None
 
-        package_root = Path(__file__).parent.parent
-        data_base_dir = package_root / 'data'
+        repo_root = Path(__file__).parent.parent.parent
+        data_base_dir = repo_root / 'data'
         timestamp = time.strftime('%Y%m%d_%H%M%S')
         self.dataset_dir = data_base_dir / f'{timestamp}_dataset'
         self.dataset_dir.mkdir(parents=True, exist_ok=True)
