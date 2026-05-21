@@ -97,7 +97,7 @@ class EdgeNavigationDataset(Dataset):
     def __init__(
         self,
         data_folder: str | Path,
-        data_split_folder: str | Path,
+        traj_names: List[str],
         dataset_name: str,
         image_size: Tuple[int, int],
         waypoint_spacing: int,
@@ -114,7 +114,6 @@ class EdgeNavigationDataset(Dataset):
         clip_model: str = DEFAULT_CLIP_MODEL,
     ) -> None:
         self.data_folder = Path(data_folder)
-        self.data_split_folder = Path(data_split_folder)
         self.dataset_name = dataset_name
         self.image_size = tuple(int(v) for v in image_size)
         self.waypoint_spacing = int(waypoint_spacing)
@@ -142,12 +141,12 @@ class EdgeNavigationDataset(Dataset):
                 "Use modality_id values without satellite input, or extend EdgeNavigationDataset "
                 "with explicit map image loading."
             )
-        self.traj_names = self.load_traj_names()
+        self.traj_names = list(traj_names)
         self.trajectory_cache: Dict[str, Mapping[str, np.ndarray]] = {}
         self.index_to_data = self.build_sample_index()
         if not self.index_to_data:
             raise ValueError(
-                f"No trainable samples found for dataset={dataset_name} split={self.data_split_folder}"
+                f"No trainable samples found for dataset={dataset_name}"
             )
 
         self.image_transform = transforms.Compose(
@@ -171,17 +170,6 @@ class EdgeNavigationDataset(Dataset):
 
     def uses_modality(self, name: str) -> bool:
         return name in self.modality_uses
-
-    def load_traj_names(self) -> List[str]:
-        traj_names_file = (
-            self.data_split_folder
-            if self.data_split_folder.is_file()
-            else self.data_split_folder / "traj_names.txt"
-        )
-        if not traj_names_file.exists():
-            raise FileNotFoundError(f"Missing traj_names.txt: {traj_names_file}")
-        names = [line.strip() for line in traj_names_file.read_text().splitlines()]
-        return [name for name in names if name]
 
     def load_trajectory(self, traj_name: str) -> Mapping[str, np.ndarray]:
         if traj_name not in self.trajectory_cache:
