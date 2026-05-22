@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import pickle
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -62,7 +61,7 @@ class TopomapGenerator:
         with traj_names_path.open("r", encoding="utf-8") as f:
             return [line.strip() for line in f if line.strip()]
 
-    def _load_trajectory(self, traj_name: str) -> tuple[list[Path], Optional[np.ndarray], Optional[np.ndarray]]:
+    def _load_trajectory(self, traj_name: str) -> list[Path]:
         traj_dir = self.dataset_path / traj_name
         if not traj_dir.is_dir():
             raise FileNotFoundError(f"Trajectory directory not found: {traj_dir}")
@@ -74,19 +73,7 @@ class TopomapGenerator:
         if not image_paths:
             raise ValueError(f"No images found in trajectory: {traj_dir}")
 
-        traj_data_path = traj_dir / "traj_data.pkl"
-        if not traj_data_path.exists():
-            return image_paths, None, None
-
-        with traj_data_path.open("rb") as f:
-            traj_data = pickle.load(f)
-
-        positions = traj_data.get("position")
-        yaws = traj_data.get("yaw")
-        if positions is None or yaws is None:
-            return image_paths, None, None
-
-        return image_paths, np.asarray(positions), np.asarray(yaws)
+        return image_paths
 
     def _preprocess_image(self, image_path: Path) -> np.ndarray:
         image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
@@ -119,7 +106,7 @@ class TopomapGenerator:
 
         nodes = []
         for traj_name in traj_names:
-            image_paths, positions, yaws = self._load_trajectory(traj_name)
+            image_paths = self._load_trajectory(traj_name)
             for image_path in image_paths[:: self.saved_step]:
                 node_index = len(nodes)
                 frame_index = self._image_sort_key(image_path)[0]
@@ -141,13 +128,6 @@ class TopomapGenerator:
                         "image": str(image_path.relative_to(self.dataset_path)),
                     },
                 }
-                if positions is not None and yaws is not None and frame_index < len(positions) and frame_index < len(yaws):
-                    node["pose"] = {
-                        "x": float(positions[frame_index][0]),
-                        "y": float(positions[frame_index][1]),
-                        "yaw": float(yaws[frame_index]),
-                    }
-
                 nodes.append(node)
 
         for node_index, node in enumerate(nodes):
