@@ -1,11 +1,17 @@
+#拡張子で指定
+*.log
+*.urdf
+*.pyc
+*.pt
+
+#ディレクトリで指定
 /build
 /install
 /log
 
 /docs
-__pycache__
+/data
 
-.codex
 training/weights/*.pth
 training/config/dataset.yaml
 training/runs
