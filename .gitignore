@@ -2,7 +2,7 @@
 *.log
 *.urdf
 *.pyc
-*.pt
+*.pth
 
 #ディレクトリで指定
 /build
