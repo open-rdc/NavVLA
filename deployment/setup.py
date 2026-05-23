@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from setuptools import find_packages, setup
@@ -5,50 +6,34 @@ from setuptools import find_packages, setup
 
 package_name = "navvla"
 deployment_dir = Path(__file__).resolve().parent
-omnivla_dir = (deployment_dir.parent / "OmniVLA").resolve()
 deployment_weight_files = [
     str(path.relative_to(deployment_dir))
     for path in sorted((deployment_dir / "weights").glob("*"))
     if path.is_file()
 ]
 
-navvla_packages = find_packages(include=["navvla", "navvla.*"])
-omnivla_packages = ["OmniVLA", "OmniVLA.inference"] + find_packages(
-    where=str(omnivla_dir),
-    include=["prismatic", "prismatic.*"],
-)
-
 
 setup(
     name=package_name,
     version="0.1.0",
-    packages=navvla_packages + omnivla_packages,
-    package_dir={
-        "OmniVLA": str(omnivla_dir),
-        "OmniVLA.inference": str(omnivla_dir / "inference"),
-        "prismatic": str(omnivla_dir / "prismatic"),
-    },
-    package_data={
-        "OmniVLA.inference": ["*.jpg"],
-        "prismatic": ["py.typed", "vla/datasets/data_config.yaml"],
-    },
+    packages=find_packages(include=["navvla", "navvla.*"]),
+    package_data={},
     data_files=[
         (
             "share/ament_index/resource_index/packages",
-            [f"resource/{package_name}"],
+            [os.path.join("resource", package_name)],
         ),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/launch", ["launch/navigation.launch.py"]),
+        (
+            f"share/{package_name}/launch",
+            [os.path.join("launch", "navigation.launch.py")],
+        ),
         (
             f"share/{package_name}/config",
             [
-                "config/nav.yaml",
-                "config/preprocess.yaml",
+                os.path.join("config", "nav.yaml"),
+                os.path.join("config", "preprocess.yaml"),
             ],
-        ),
-        (
-            f"share/{package_name}/OmniVLA/inference",
-            ["../OmniVLA/inference/goal_img.jpg"],
         ),
         (
             f"share/{package_name}/deployment/weights",
