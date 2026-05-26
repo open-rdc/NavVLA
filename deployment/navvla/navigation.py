@@ -144,7 +144,7 @@ class OmniVLANavigationNode(Node):
         else:
             goal_pose = [0.0, 0.0, 1.0, 0.0]
 
-        self.latest_prompt = "Go to the room on the right"
+        self.latest_prompt = "Stop at the white line"
         self.update_text_feature()
 
         self.satellite_current = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
@@ -249,12 +249,12 @@ class OmniVLANavigationNode(Node):
         dx *= self.waypoint_spacing
         dy *= self.waypoint_spacing
 
-        eps = 1e-8
-        dt = 1.0 / 3.0
+        eps = 0.1
+        dt = 1.0 / 5.0
 
         if abs(dx) < eps and abs(dy) < eps:
             linear_vel = 0.0
-            angular_vel = self.clip_angle(math.atan2(hy, hx)) / dt
+            angular_vel = 0.0
         elif abs(dx) < eps:
             linear_vel = 0.0
             angular_vel = math.copysign(math.pi / (2.0 * dt), dy)
