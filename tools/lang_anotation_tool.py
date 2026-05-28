@@ -82,8 +82,13 @@ class LangAnnotationTool:
         )
         self.end_scale.grid(row=3, column=1, padx=8)
 
+        self.start_lang_label = tk.Label(root, text="", fg="blue", wraplength=280, justify="left")
+        self.start_lang_label.grid(row=4, column=0, padx=8, sticky="w")
+        self.end_lang_label = tk.Label(root, text="", fg="blue", wraplength=280, justify="left")
+        self.end_lang_label.grid(row=4, column=1, padx=8, sticky="w")
+
         bottom = tk.Frame(root)
-        bottom.grid(row=4, column=0, columnspan=2, pady=4, sticky="ew")
+        bottom.grid(row=5, column=0, columnspan=2, pady=4, sticky="ew")
 
         self.range_label = tk.Label(bottom, text="")
         self.range_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=8)
@@ -132,6 +137,9 @@ class LangAnnotationTool:
         self.update_image_panel("start", self.start_var.get())
         self.update_image_panel("end", self.end_var.get())
         self.update_range_label()
+        s, e = self.start_var.get(), self.end_var.get()
+        self.start_lang_label.configure(text=self.prompts[s] if self.prompts else "")
+        self.end_lang_label.configure(text=self.prompts[e] if self.prompts else "")
 
     def update_image_panel(self, side: str, index: int) -> None:
         ep_dir = self.episode_dirs[self.current_episode_idx]
