@@ -1,7 +1,9 @@
 """Launch file for NavVLA navigation node."""
 
+import os
 from pathlib import Path
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -15,7 +17,10 @@ def generate_launch_description() -> LaunchDescription:
     nav_config_default = str(package_share / "config" / "nav.yaml")
     preprocess_config_default = str(package_share / "config" / "preprocess.yaml")
     pfoe_config = str(package_share / "config" / "pfoe.yaml")
-    episode_data_dir_default = str(package_share / "data" / "sample")
+
+    with open(pfoe_config, "r") as f:
+        rel_data_dir = yaml.safe_load(f)["pfoe_node"]["ros__parameters"]["episode_data_dir"]
+    episode_data_dir_default = os.path.join(str(package_share), rel_data_dir)
 
     return LaunchDescription(
         [
