@@ -33,6 +33,7 @@ setup(
             [
                 os.path.join("config", "nav.yaml"),
                 os.path.join("config", "preprocess.yaml"),
+                os.path.join("config", "pfoe.yaml"),
             ],
         ),
         (
