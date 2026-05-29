@@ -21,20 +21,38 @@ Event* Episode::at(int i)
 
 Event* Episode::current()
 {
-  return &events_.back();
+  return &live_.back();
+}
+
+Event* Episode::recent(int i)
+{
+  // 1-indexed: 1 = latest, 2 = previous, ...
+  return &live_.at(live_.size() - static_cast<size_t>(i));
+}
+
+int Episode::recent_size() const
+{
+  return static_cast<int>(live_.size());
+}
+
+bool Episode::has_live() const
+{
+  return !live_.empty();
 }
 
 void Episode::push_back(const Event& e)
 {
-  events_.push_back(e);
-  // discount-based value propagation (reference impl compatible)
-  int n = 1;
-  double v_next = 0.0;
-  for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
-    it->observation;  // access to suppress unused warning
-    (void)v_next;
-    if (n++ >= backtrack_threshold_) break;
-    v_next *= discount_rate_;
+  live_.push_back(e);
+  while (live_.size() > live_capacity_) {
+    live_.pop_front();
+  }
+}
+
+void Episode::set_live_capacity(size_t k)
+{
+  live_capacity_ = k;
+  while (live_.size() > live_capacity_) {
+    live_.pop_front();
   }
 }
 

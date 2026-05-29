@@ -3,7 +3,7 @@
 
 namespace pfoe {
 
-double Event::likelihood(const Event& ref) const
+double Event::similarity(const Event& ref) const
 {
   const auto& a = observation;
   const auto& b = ref.observation;
@@ -13,9 +13,8 @@ double Event::likelihood(const Event& ref) const
     na  += a[i] * a[i];
     nb  += b[i] * b[i];
   }
-  double cos_sim = dot / (std::sqrt(na * nb) + 1e-8);
-  // cos_sim ∈ [-1,1] → non-negative likelihood
-  return std::exp(cos_sim + 1.0);
+  // cosine similarity ∈ [-1, 1]
+  return dot / (std::sqrt(na * nb) + 1e-8);
 }
 
 }  // namespace pfoe
