@@ -1,11 +1,11 @@
-weights_path: deployment/weights/omnivla-edge.pth
+weights_path: deployment/weights/omnivla-edge_tsudanuma8.pth
 model_type: omnivla-edge
 context_size: 5
 len_traj_pred: 8
 
 interval_ms: 100
-linear_max_vel: 0.5
-angular_max_vel: 0.5
+linear_max_vel: 1.0
+angular_max_vel: 1.0
 close_threshold: 1.0
 
 modality_id: 7

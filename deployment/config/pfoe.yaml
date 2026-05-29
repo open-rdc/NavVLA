@@ -1,10 +1,10 @@
 
 pfoe:
   ros__parameters:
-    episode_data_dir:  "data/simulator/3f_lang"
+    episode_data_dir:  "data/tsudanuma"
     traj_name:         "episode01"
 
-    num_particles:     1000    # cf. ParticleFilter pf(1000)
+    num_particles:     100    # cf. ParticleFilter pf(1000)
     weight_sum_thresh: 0.001   # cf. sum > 0.001
     retro_steps:       20      # cf. retrospectiveFilter(..., 20)
     backtrack:         1000    # cf. Episode episode(1000, 0.99)
