@@ -1,9 +1,7 @@
-# pfoe.yaml — PFoE + CLIP encoder node parameters
-# Reference: ~/PFoE/src/pfoe_node.cpp defaults
 
-pfoe_node:
+pfoe:
   ros__parameters:
-    episode_data_dir:  "data/sample"
+    episode_data_dir:  "data/simulator/3f_lang"
     traj_name:         "episode01"
 
     num_particles:     1000    # cf. ParticleFilter pf(1000)
@@ -12,6 +10,15 @@ pfoe_node:
     backtrack:         1000    # cf. Episode episode(1000, 0.99)
     discount:          0.99    # cf. Episode episode(1000, 0.99)
 
-clip_encoder_node:
+    # --- observation model sharpness (temperature β in exp(β·cos)) ---
+    obs_temperature:   50.0
+
+    # --- particle filter motion model probabilities ---
+    p_back:            0.25
+    p_stay:            0.50
+    p_forward:         0.20
+    p_skip:            0.05
+
+clip_encoder:
   ros__parameters:
     clip_model: "ViT-B/32"

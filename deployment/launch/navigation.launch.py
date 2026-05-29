@@ -19,7 +19,7 @@ def generate_launch_description() -> LaunchDescription:
     pfoe_config = str(package_share / "config" / "pfoe.yaml")
 
     with open(pfoe_config, "r") as f:
-        rel_data_dir = yaml.safe_load(f)["pfoe_node"]["ros__parameters"]["episode_data_dir"]
+        rel_data_dir = yaml.safe_load(f)["pfoe"]["ros__parameters"]["episode_data_dir"]
     episode_data_dir_default = os.path.join(str(package_share), rel_data_dir)
 
     return LaunchDescription(
