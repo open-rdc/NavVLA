@@ -3,7 +3,7 @@ model_type: omnivla-edge
 context_size: 5
 len_traj_pred: 8
 
-interval_ms: 100
+interval_ms: 200
 linear_max_vel: 0.5
 angular_max_vel: 0.5
 close_threshold: 1.0
@@ -22,7 +22,7 @@ modality_id: 7
 
 # Optional inference settings
 waypoint_select: 4
-metric_waypoint_spacing: 0.3
+metric_waypoint_spacing: 0.17
 goal_pose: [10.0, -1.0, 0.0, -1.0]
 goal_image_path: OmniVLA/inference/goal_img.jpg
 path_frame_id: base_link
