@@ -6,11 +6,21 @@ from setuptools import find_packages, setup
 
 package_name = "navvla"
 deployment_dir = Path(__file__).resolve().parent
+repo_root = deployment_dir.parent
 deployment_weight_files = [
     str(path.relative_to(deployment_dir))
     for path in sorted((deployment_dir / "weights").glob("*"))
     if path.is_file()
 ]
+
+data_files_by_dest: dict[str, list[str]] = {}
+for path in sorted((repo_root / "data").rglob("*")):
+    if not path.is_file():
+        continue
+    dest = f"share/{package_name}/data/{path.parent.relative_to(repo_root / 'data').as_posix()}".rstrip("/.")
+    data_files_by_dest.setdefault(dest, []).append(
+        os.path.relpath(str(path), str(deployment_dir))
+    )
 
 
 setup(
@@ -33,12 +43,14 @@ setup(
             [
                 os.path.join("config", "nav.yaml"),
                 os.path.join("config", "preprocess.yaml"),
+                os.path.join("config", "pfoe.yaml"),
             ],
         ),
         (
             f"share/{package_name}/deployment/weights",
             deployment_weight_files,
         ),
+        *sorted(data_files_by_dest.items()),
     ],
     install_requires=["setuptools", "numpy", "PyYAML"],
     zip_safe=True,

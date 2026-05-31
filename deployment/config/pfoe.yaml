@@ -1,0 +1,24 @@
+
+pfoe:
+  ros__parameters:
+    episode_data_dir:  "data/tsudanuma"
+    traj_name:         "episode01"
+
+    num_particles:     100    # cf. ParticleFilter pf(1000)
+    weight_sum_thresh: 0.001   # cf. sum > 0.001
+    retro_steps:       20      # cf. retrospectiveFilter(..., 20)
+    backtrack:         1000    # cf. Episode episode(1000, 0.99)
+    discount:          0.99    # cf. Episode episode(1000, 0.99)
+
+    # --- observation model sharpness (temperature β in exp(β·cos)) ---
+    obs_temperature:   50.0
+
+    # --- particle filter motion model probabilities ---
+    p_back:            0.25
+    p_stay:            0.50
+    p_forward:         0.20
+    p_skip:            0.05
+
+clip_encoder:
+  ros__parameters:
+    clip_model: "ViT-B/32"
