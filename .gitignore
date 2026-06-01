@@ -13,9 +13,8 @@
 /data
 
 training/weights/*.pth
-training/config/dataset.yaml
+training/config/*yaml
 training/runs
-training/dataset/
 
 #ファイル名で指定
 .codex
