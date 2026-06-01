@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
@@ -13,6 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from OmniVLA.inference.model_omnivla_edge import OmniVLA_edge
 from training.eval import Test
+from training.optim import build_scheduler
 from training.train import Train
 
 
@@ -123,29 +125,71 @@ def main_loop(
         weight_decay=float(train_cfg["weight_decay"]),
     )
 
-    Trainer = Train(model=model, loader=train_loader, optimizer=optimizer, device=device)
-    TrainEvaluators = {
-        dataset_type: Test(model=model, loader=loader, device=device)
-        for dataset_type, loader in train_eval_dataloaders.items()
-    }
-    Testers = {
-        dataset_type: Test(model=model, loader=loader, device=device)
-        for dataset_type, loader in test_dataloaders.items()
-    }
+    smoothness_weight = float(train_cfg.get("smoothness_weight", 0.1))
+    max_grad_norm_cfg = train_cfg.get("max_grad_norm")
+    max_grad_norm = None if max_grad_norm_cfg in (None, 0, 0.0) else float(max_grad_norm_cfg)
 
+    epochs = int(train_cfg["epochs"])
     max_train_steps = train_cfg.get("max_train_steps")
     max_test_steps = train_cfg.get("max_test_steps")
     save_freq = int(train_cfg["save_freq"])
     eval_freq = int(train_cfg["eval_freq"])
+
+    scheduler_type = str(train_cfg.get("lr_scheduler_type", "cosine"))
+    warmup_epochs = int(train_cfg.get("warmup_epochs", 0))
+    scheduler = build_scheduler(
+        optimizer,
+        scheduler_type=scheduler_type,
+        total_epochs=epochs,
+        warmup_epochs=warmup_epochs,
+    )
+    print(
+        f"[NavVLA] optimizer=AdamW lr={float(train_cfg['learning_rate'])} "
+        f"wd={float(train_cfg['weight_decay'])} scheduler={scheduler_type} "
+        f"warmup_epochs={warmup_epochs}/{epochs} max_grad_norm={max_grad_norm} "
+        f"smoothness_weight={smoothness_weight}"
+    )
+
+    Trainer = Train(
+        model=model,
+        loader=train_loader,
+        optimizer=optimizer,
+        device=device,
+        smoothness_weight=smoothness_weight,
+        max_grad_norm=max_grad_norm,
+    )
+    TrainEvaluators = {
+        dataset_type: Test(
+            model=model,
+            loader=loader,
+            device=device,
+            smoothness_weight=smoothness_weight,
+        )
+        for dataset_type, loader in train_eval_dataloaders.items()
+    }
+    Testers = {
+        dataset_type: Test(
+            model=model,
+            loader=loader,
+            device=device,
+            smoothness_weight=smoothness_weight,
+        )
+        for dataset_type, loader in test_dataloaders.items()
+    }
+
     if SummaryWriter is None:
         raise ImportError("TensorBoard is not available. Install it with: pip install tensorboard")
-    tensorboard_dir = train_cfg.get("tensorboard_log_dir", run_dir / "tensorboard")
+    base_tb_dir = Path(str(train_cfg.get("tensorboard_log_dir", run_dir / "tensorboard")))
+    tensorboard_dir = base_tb_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
     print(f"[NavVLA] TensorBoard: {tensorboard_dir}")
 
-    for epoch in range(1, int(train_cfg["epochs"]) + 1):
-        train_metrics = Trainer.run(
-            max_steps=None if max_train_steps is None else int(max_train_steps)
+    global_step = 0
+    for epoch in range(1, epochs + 1):
+        train_metrics, global_step = Trainer.run(
+            max_steps=None if max_train_steps is None else int(max_train_steps),
+            writer=writer,
+            global_step=global_step,
         )
         print(f"[NavVLA] epoch={epoch} train={train_metrics}")
         writer.add_scalar("loss/train_total", train_metrics["loss"], epoch)
@@ -177,7 +221,10 @@ def main_loop(
             torch.save(model.state_dict(), checkpoint_path)
             print(f"[NavVLA] saved={checkpoint_path}")
 
-        writer.close()
+        scheduler.step()
+        writer.add_scalar("lr_epoch", optimizer.param_groups[0]["lr"], epoch)
+
+    writer.close()
 
     run_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), run_dir / "model_latest.pth")
