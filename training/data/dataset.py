@@ -365,10 +365,10 @@ class EdgeNavigationDataset(Dataset):
             return self.get_prompt_text_feature(traj_name, curr_time)
         return self.get_text_feature(traj_data, curr_time)
 
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        base_index = index // self.goals_per_obs
-        traj_name, curr_time, max_goal_time = self.index_to_data[base_index]
-        goal_time = np.random.randint(curr_time + 1, max_goal_time + 1)
+    def build_sample(
+        self, traj_name: str, curr_time: int, goal_time: int
+    ) -> Dict[str, torch.Tensor]:
+        """Assemble one training sample for an explicit ``goal_time``."""
         traj_data = self.load_trajectory(traj_name)
 
         obs_images = self.build_observation_images(traj_name, curr_time)
@@ -390,6 +390,12 @@ class EdgeNavigationDataset(Dataset):
             "current_img": current_img,
             "actions": actions,
         }
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        base_index = index // self.goals_per_obs
+        traj_name, curr_time, max_goal_time = self.index_to_data[base_index]
+        goal_time = np.random.randint(curr_time + 1, max_goal_time + 1)
+        return self.build_sample(traj_name, curr_time, goal_time)
 
 
 def collate_edge_samples(
