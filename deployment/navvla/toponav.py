@@ -30,8 +30,9 @@ class TopologicalNavigator:
         image_size: Tuple[int, int],
         crop_size: int = 288,
         delta: float = 5.0,
-        window_lower: int = -1,
-        window_upper: int = 10,
+        window_lower: int = 0,
+        window_upper: int = 2,
+        window_radius: int = 2,
     ) -> None:
         self.topomap_path = Path(topomap_path)
         self.image_dir = Path(image_dir)
@@ -39,6 +40,8 @@ class TopologicalNavigator:
         self.device = device
         self.image_size = (int(image_size[0]), int(image_size[1]))
         self.crop_size = int(crop_size)
+        # windowed mass（ピーク±window_radius ノードの確率質量）算出用の半径
+        self.window_radius = int(window_radius)
 
         # Bayesian filter パラメータ
         self.delta = float(delta)
@@ -162,7 +165,13 @@ class TopologicalNavigator:
             self._update_belief(query_feature)
 
         best_index = int(np.argmax(self.belief))
-        return best_index, float(self.belief[best_index])
+        return best_index, self._windowed_mass(best_index)
+
+    def _windowed_mass(self, best_index: int) -> float:
+        n = len(self.belief)
+        lo = max(0, best_index - self.window_radius)
+        hi = min(n, best_index + self.window_radius + 1)
+        return float(self.belief[lo:hi].sum())
 
     def reset(self) -> None:
         """信念を初期化する。環境が大きく変わった場合や再スタート時に呼ぶ。"""

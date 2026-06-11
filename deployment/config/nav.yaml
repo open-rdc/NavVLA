@@ -1,14 +1,17 @@
-weights_path: deployment/weights/omnivla-edge.pth
+weights_path: deployment/weights/omnivla-edge_3f8_id6.pth
 model_type: omnivla-edge
 context_size: 5
 len_traj_pred: 8
 
-interval_ms: 100
-linear_max_vel: 0.3
-angular_max_vel: 0.3
+# interval_ms: 自己位置推定ループの周期 / policy_interval_ms: OmniVLA本体推論の周期
+# OmniVLA推論を優先するため、どちらも 5Hz (200ms) で回す
+interval_ms: 200
+policy_interval_ms: 200
+linear_max_vel: 0.6
+angular_max_vel: 0.5
 close_threshold: 1.0
 
-modality_id: 3
+modality_id: 6
 # modality flags (pose/image/language) are derived automatically from modality_id
 # 0: satellite only
 # 1: pose and satellite
@@ -29,9 +32,17 @@ lan_prompt: blue trash bin
 path_frame_id: base_link
 
 # Topological navigation using ml_planner-style topomap features.
-use_toponav: false
+use_toponav: true
 topomap_path: config/topomap/topomap.yaml
 topomap_image_dir: config/topomap/images
 placenet_weight_path: deployment/weights/placenet.pt
 toponav_crop_size: 288
-toponav_min_score: -1.0
+# 自己位置推定の信頼度は windowed_mass（ピーク±window_radius ノードに集まった確率の割合 0〜1）で判定する。
+# N・観測スケールに非依存。belief が単峰の塊になっているかを測る。
+toponav_window_radius: 2
+# windowed_mass のしきい値。0.4=「belief の4割以上がピーク±2ノードに集中」したら採用。
+toponav_min_score: 0.4
+# 遷移窓：1周期での移動量[window_lower, window_upper)。広いと belief が一様にボケて
+# score が出ない。[0,2)=その場 or +1ノードに絞り、belief を集中させる。
+toponav_window_lower: -1
+toponav_window_upper: 1

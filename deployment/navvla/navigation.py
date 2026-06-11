@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Deque, Optional, Tuple
@@ -40,9 +42,11 @@ from .toponav import TopologicalNavigator
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Path as NavPath
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32, String
 
 
 class OmniVLANavigationNode(Node):
@@ -68,14 +72,43 @@ class OmniVLANavigationNode(Node):
         self.init_model_modality()
         self.init_toponav()
 
-        self.image_sub = self.create_subscription(Image, "/image_raw", self.image_callback, 10)
-        self.autonomous_sub = self.create_subscription(Bool, "/autonomous", self.autonomous_callback, 10)
-        self.prompt_sub = self.create_subscription(String, "/prompt", self.prompt_callback, 10)
+        self._state_lock = threading.Lock()
+        self._loc_last_t: Optional[float] = None
+        self._policy_last_t: Optional[float] = None
+
+        # コールバックグループを分け、MultiThreadedExecutor で並列に回す。
+        self._io_group = MutuallyExclusiveCallbackGroup()
+        self._loc_group = MutuallyExclusiveCallbackGroup()
+        self._policy_group = MutuallyExclusiveCallbackGroup()
+
+        self.image_sub = self.create_subscription(
+            Image, "/image_raw", self.image_callback, 10, callback_group=self._io_group
+        )
+        self.autonomous_sub = self.create_subscription(
+            Bool, "/autonomous", self.autonomous_callback, 10, callback_group=self._io_group
+        )
+        self.prompt_sub = self.create_subscription(
+            String, "/prompt", self.prompt_callback, 10, callback_group=self._io_group
+        )
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.path_pub = self.create_publisher(NavPath, "/path", 10)
+        # デバッグ用：toponav の目標画像・現在ノード・目標ノードを可視化する
+        self.goal_image_pub = self.create_publisher(Image, "/toponav/goal_image", 1)
+        self.current_node_pub = self.create_publisher(Int32, "/toponav/current_node", 10)
+        self.goal_node_pub = self.create_publisher(Int32, "/toponav/goal_node", 10)
 
-        self.timer = self.create_timer(self.interval_ms / 1000.0, self.timer_callback)
-        self.get_logger().info("navigation.py node started")
+        # 自己位置推定は interval_ms（=10Hz）で固定。本体推論は policy_interval_ms。
+        # 本体が重くて GPU を占有する場合は policy_interval_ms を伸ばして loc を優先する。
+        policy_interval_ms = float(self.nav_cfg.get("policy_interval_ms", self.interval_ms))
+        self.localization_timer = self.create_timer(
+            self.interval_ms / 1000.0, self.localization_timer_callback, callback_group=self._loc_group
+        )
+        self.policy_timer = self.create_timer(
+            policy_interval_ms / 1000.0, self.policy_timer_callback, callback_group=self._policy_group
+        )
+        self.get_logger().info(
+            f"navigation.py node started (loc={self.interval_ms:.0f}ms, policy={policy_interval_ms:.0f}ms)"
+        )
 
     def init_params(self) -> None:
         self.context_size = self.nav_cfg.get("context_size", 5)
@@ -168,6 +201,7 @@ class OmniVLANavigationNode(Node):
         self.satellite_current = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
         self.satellite_goal = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
 
+        self.current_goal_pil = goal_pil
         self.goal_image_tensor = transform_images_PIL_mask(goal_pil, self.mask_goal).to(self.device)
         self.goal_pose_tensor = torch.tensor([goal_pose], dtype=torch.float32, device=self.device)
         self.modality_tensor = torch.tensor([self.modality_id], dtype=torch.long, device=self.device)
@@ -187,6 +221,7 @@ class OmniVLANavigationNode(Node):
         self.toponav = None
         self.toponav_current_index = None
         self.toponav_goal_index = None
+        # 信頼度ゲートは windowed_mass（ピーク近傍の確率質量）で固定。
         self.toponav_min_score = float(self.nav_cfg.get("toponav_min_score", -1.0))
 
         if not self.use_toponav:
@@ -209,6 +244,7 @@ class OmniVLANavigationNode(Node):
             delta=float(self.nav_cfg.get("toponav_delta", 5.0)),
             window_lower=int(self.nav_cfg.get("toponav_window_lower", -1)),
             window_upper=int(self.nav_cfg.get("toponav_window_upper", 10)),
+            window_radius=int(self.nav_cfg.get("toponav_window_radius", 2)),
         )
         self.get_logger().info(f"Toponav loaded: nodes={len(self.toponav.nodes)}, topomap={topomap_path}")
 
@@ -221,27 +257,50 @@ class OmniVLANavigationNode(Node):
             self._update_text_feature()
 
     def image_callback(self, msg: Image) -> None:
-        self.obs_image_bgr = image_msg_to_bgr(msg)
-
+        bgr = image_msg_to_bgr(msg)
         cv_image = image_to_cv2(msg, self.clip_size)
-        self.obs_image = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+        pil = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+        with self._state_lock:
+            self.obs_image_bgr = bgr
+            self.obs_image = pil
 
+    def localization_timer_callback(self) -> None:
+        """toponav 自己位置推定。本体推論とは別スレッドで 10Hz 固定で回す。"""
+        # 目標画像は自律走行前でも確認できるよう毎周期 publish
+        self.publish_goal_image()
 
-    def timer_callback(self) -> None:
-        if not self.autonomous_flag or self.obs_image is None:
+        if self.toponav is None:
+            return
+        with self._state_lock:
+            obs_bgr = self.obs_image_bgr
+        if obs_bgr is None:
             return
 
-        self.context_queue.append(self.obs_image.resize(self.obs_size))
+        t0 = time.perf_counter()
+        self.update_toponav_goal(obs_bgr)
+        self._log_rate("loc", "_loc_last_t", (time.perf_counter() - t0) * 1000.0)
+
+    def policy_timer_callback(self) -> None:
+        """OmniVLA 本体推論。重いので loc ループとは独立に回す。"""
+        if not self.autonomous_flag:
+            return
+        with self._state_lock:
+            obs_image = self.obs_image
+        if obs_image is None:
+            return
+
+        self.context_queue.append(obs_image.resize(self.obs_size))
         if len(self.context_queue) > self.context_size + 1:
             self.context_queue.pop(0)
         if len(self.context_queue) < self.context_size + 1:
             return
 
-        self.update_toponav_goal()
+        # loc スレッドが差し替える参照をスナップショット（参照代入は GIL 下で原子的）
+        goal_image_tensor = self.goal_image_tensor
 
         obs_images, map_images, cur_large_img = build_omnivla_edge_inputs(
             context_queue=self.context_queue,
-            current_image=self.obs_image,
+            current_image=obs_image,
             mask_obs=self.mask_obs,
             mask_clip=self.mask_clip,
             satellite_current=self.satellite_current,
@@ -250,52 +309,68 @@ class OmniVLANavigationNode(Node):
             device=self.device,
         )
 
-        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
-        token = clip.tokenize(prompt, truncate=True).to(self.device)
-        with torch.no_grad():
-            self.feat_text = self.text_encoder.encode_text(token)
-
+        # feat_text は init / prompt_callback で更新済み。毎周期の再エンコードは不要。
+        t0 = time.perf_counter()
         with torch.no_grad():
             action_pred, _, _ = self.model(
                 obs_images,
                 self.goal_pose_tensor,
                 map_images,
-                self.goal_image_tensor,
+                goal_image_tensor,
                 self.modality_tensor,
                 self.feat_text,
                 cur_large_img,
             )
+        fwd_ms = (time.perf_counter() - t0) * 1000.0
 
         waypoints, linear_vel, angular_vel = self.action_to_waypoints_and_cmd_vel(action_pred)
-
         self.publisher_path(waypoints)
         self.publisher_command_velocity(linear_vel, angular_vel)
+        self._log_rate("policy", "_policy_last_t", fwd_ms)
 
-    def update_toponav_goal(self) -> None:
-        if self.toponav is None or self.obs_image_bgr is None:
+    def _log_rate(self, name: str, attr: str, work_ms: float) -> None:
+        now = time.perf_counter()
+        last = getattr(self, attr)
+        setattr(self, attr, now)
+        if last is None:
             return
+        period_ms = (now - last) * 1000.0
+        hz = 1000.0 / period_ms if period_ms > 1e-6 else 0.0
+        self.get_logger().info(
+            f"[{name}] period={period_ms:.1f}ms ({hz:.1f}Hz) work={work_ms:.1f}ms",
+            throttle_duration_sec=5.0,
+        )
 
-        current_index, score = self.toponav.estimate_current_node(self.obs_image_bgr)
-        if score < self.toponav_min_score:
-            self.get_logger().warn(
-                f"Toponav score below threshold: score={score:.3f}, threshold={self.toponav_min_score:.3f}"
-            )
-            return
-
+    def update_toponav_goal(self, obs_bgr: np.ndarray) -> None:
+        # estimate_current_node は windowed_mass（ピーク近傍の確率質量）を信頼度として返す
+        current_index, score = self.toponav.estimate_current_node(obs_bgr)
         goal_index = self.toponav.select_goal_node(current_index)
+
+        below = score < self.toponav_min_score
+
+        # デバッグ用：推定した現在/目標ノードは閾値に関わらず常に publish する。
+        # （低信頼でも「どこにいると思っているか」を確認できるように）
+        current_node = self.toponav.nodes[current_index]
+        goal_node = self.toponav.nodes[goal_index]
+        self.current_node_pub.publish(Int32(data=int(current_node.node_id)))
+        self.goal_node_pub.publish(Int32(data=int(goal_node.node_id)))
+        self.get_logger().info(
+            f"[toponav] current_id={current_node.node_id}, goal_id={goal_node.node_id} | "
+            f"wmass={score:.3f} thr={self.toponav_min_score:.3f}{' BELOW' if below else ''}",
+            throttle_duration_sec=1.0,
+        )
+
+        # 信頼度が低いときは goal 画像の切り替えだけ見送る（推定値は上で公開済み）
+        if below:
+            return
         if current_index == self.toponav_current_index and goal_index == self.toponav_goal_index:
             return
 
         goal_pil = self.toponav.load_goal_image(goal_index)
+        self.current_goal_pil = goal_pil
         self.goal_image_tensor = transform_images_PIL_mask(goal_pil, self.mask_goal).to(self.device)
         self.toponav_current_index = current_index
         self.toponav_goal_index = goal_index
-        current_node = self.toponav.nodes[current_index]
-        goal_node = self.toponav.nodes[goal_index]
-        self.get_logger().info(
-            "Toponav goal updated: "
-            f"current_id={current_node.node_id}, goal_id={goal_node.node_id}, score={score:.3f}"
-        )
 
     def publisher_path(self, waypoints: np.ndarray) -> None:
         msg = NavPath()
@@ -317,6 +392,25 @@ class OmniVLANavigationNode(Node):
             msg.poses.append(pose)
         
         self.path_pub.publish(msg)
+
+    def publish_goal_image(self) -> None:
+        goal_pil = getattr(self, "current_goal_pil", None)
+        if goal_pil is None:
+            return
+        self.goal_image_pub.publish(self._pil_to_image_msg(goal_pil, "toponav_goal"))
+
+    def _pil_to_image_msg(self, pil_image: PILImage.Image, frame_id: str) -> Image:
+        rgb = np.ascontiguousarray(np.asarray(pil_image.convert("RGB"), dtype=np.uint8))
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = frame_id
+        msg.height = int(rgb.shape[0])
+        msg.width = int(rgb.shape[1])
+        msg.encoding = "rgb8"
+        msg.is_bigendian = 0
+        msg.step = int(rgb.shape[1]) * 3
+        msg.data = rgb.tobytes()
+        return msg
 
     def publisher_command_velocity(self, linear_vel: float, angular_vel: float) -> None:
         twist = Twist()
@@ -386,9 +480,13 @@ def main() -> int:
 
     rclpy.init()
     node = OmniVLANavigationNode(nav_config_path, preprocess_config_path, package_share_dir)
+    # 自己位置推定・本体推論・I/O を別スレッドで並列に回す
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 
