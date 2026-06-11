@@ -40,32 +40,57 @@ def create_dataloaders(
         missing = [key for key in required_data_keys if key not in data_config]
         if missing:
             raise ValueError(f"Missing required keys for dataset {dataset_name}: {missing}")
-        for data_split_type in ("train", "test"):
-            if data_split_type not in data_config:
-                continue
-            dataset = EdgeNavigationDataset(
-                data_folder=data_config["data_folder"],
-                data_split_folder=data_config[data_split_type],
-                dataset_name=str(dataset_name),
-                image_size=tuple(dataset_cfg["image_size"]),
-                waypoint_spacing=int(data_config["waypoint_spacing"]),
-                len_traj_pred=int(network_cfg["len_traj_pred"]),
-                learn_angle=bool(network_cfg["learn_angle"]),
-                context_size=int(network_cfg["context_size"]),
-                context_type=str(dataset_cfg["context_type"]),
-                end_slack=int(data_config["end_slack"]),
-                goals_per_obs=int(data_config["goals_per_obs"]),
-                normalize=bool(dataset_cfg["normalize"]),
-                modality_id=int(data_config["modality_id"]),
-                metric_waypoint_spacing=float(data_config.get("metric_waypoint_spacing", 1.0)),
-                clip_image_size=tuple(dataset_cfg.get("clip_image_size", (224, 224))),
-                clip_model=str(dataset_cfg.get("clip_model", "ViT-B/32")),
+        train_ratio = data_config.get("train_ratio")
+        common_kwargs = dict(
+            data_folder=data_config["data_folder"],
+            dataset_name=str(dataset_name),
+            image_size=tuple(dataset_cfg["image_size"]),
+            waypoint_spacing=int(data_config["waypoint_spacing"]),
+            len_traj_pred=int(network_cfg["len_traj_pred"]),
+            learn_angle=bool(network_cfg["learn_angle"]),
+            context_size=int(network_cfg["context_size"]),
+            context_type=str(dataset_cfg["context_type"]),
+            end_slack=int(data_config["end_slack"]),
+            goals_per_obs=int(data_config["goals_per_obs"]),
+            normalize=bool(dataset_cfg["normalize"]),
+            modality_id=int(data_config["modality_id"]),
+            metric_waypoint_spacing=float(data_config.get("metric_waypoint_spacing", 1.0)),
+            clip_image_size=tuple(dataset_cfg.get("clip_image_size", (224, 224))),
+            clip_model=str(dataset_cfg.get("clip_model", "ViT-B/32")),
+        )
+
+        if train_ratio is not None:
+            traj_names_path = Path(data_config["data_folder"]) / "traj_names.txt"
+            if not traj_names_path.exists():
+                raise FileNotFoundError(f"traj_names.txt not found in data_folder: {traj_names_path}")
+            train_dataset = EdgeNavigationDataset(
+                data_split_folder=traj_names_path,
+                train_ratio=float(train_ratio),
+                split_type="train",
+                **common_kwargs,
             )
-            if data_split_type == "train":
-                train_datasets.append(dataset)
-                train_eval_datasets[f"{dataset_name}_{data_split_type}"] = dataset
-            else:
-                test_datasets[f"{dataset_name}_{data_split_type}"] = dataset
+            test_dataset = EdgeNavigationDataset(
+                data_split_folder=traj_names_path,
+                train_ratio=float(train_ratio),
+                split_type="test",
+                **common_kwargs,
+            )
+            train_datasets.append(train_dataset)
+            train_eval_datasets[f"{dataset_name}_train"] = train_dataset
+            test_datasets[f"{dataset_name}_test"] = test_dataset
+        else:
+            for data_split_type in ("train", "test"):
+                if data_split_type not in data_config:
+                    continue
+                dataset = EdgeNavigationDataset(
+                    data_split_folder=data_config[data_split_type],
+                    **common_kwargs,
+                )
+                if data_split_type == "train":
+                    train_datasets.append(dataset)
+                    train_eval_datasets[f"{dataset_name}_{data_split_type}"] = dataset
+                else:
+                    test_datasets[f"{dataset_name}_{data_split_type}"] = dataset
 
     if not train_datasets:
         raise ValueError("No train datasets were configured in dataset.yaml.")

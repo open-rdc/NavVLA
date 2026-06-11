@@ -16,10 +16,5 @@ training/weights/*.pth
 training/config/dataset.yaml
 training/runs
 training/dataset/
-
-#ファイル名で指定
-.codex
-.vscode
-__pycache__
-
-#例外ファイルを指定
+deployment/config/topomap/
+deployment/weights/*.pt

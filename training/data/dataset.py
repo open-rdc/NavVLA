@@ -26,6 +26,7 @@ REQUIRED_KEYS = (
     "feat_text",
     "current_img",
     "actions",
+    "dist_to_goal",
 )
 
 KEY_ALIASES = {
@@ -112,6 +113,8 @@ class EdgeNavigationDataset(Dataset):
         metric_waypoint_spacing: float = 1.0,
         clip_image_size: Tuple[int, int] = (224, 224),
         clip_model: str = DEFAULT_CLIP_MODEL,
+        train_ratio: float | None = None,
+        split_type: str = "train",
     ) -> None:
         self.data_folder = Path(data_folder)
         self.data_split_folder = Path(data_split_folder)
@@ -130,6 +133,9 @@ class EdgeNavigationDataset(Dataset):
         self.clip_image_size = tuple(int(v) for v in clip_image_size)
         self.clip_model = str(clip_model)
         self.dummy_text_feature: torch.Tensor | None = None
+        self.action_horizon = self.len_traj_pred * self.waypoint_spacing
+        self.train_ratio = train_ratio
+        self.split_type = split_type
         self.text_encoder = None
         self.prompt_cache: Dict[str, List[str]] = {}
         self.text_feature_cache: Dict[str, torch.Tensor] = {}
@@ -213,10 +219,25 @@ class EdgeNavigationDataset(Dataset):
             traj_data = self.load_trajectory(traj_name)
             traj_len = len(self.read_positions(traj_data))
             end_time = traj_len - self.end_slack - action_horizon
-            for curr_time in range(begin_time, end_time):
+
+            all_times = [
+                t for t in range(begin_time, end_time)
+                if min(traj_len - self.end_slack - 1, t + action_horizon) > t
+            ]
+
+            if self.train_ratio is not None:
+                # トラジェクトリ名をシードにすることでtrain/test両データセットで同じシャッフル順になる
+                rng = np.random.default_rng(seed=abs(hash(traj_name)) % (2**31))
+                shuffled = rng.permutation(len(all_times))
+                n_train = int(len(shuffled) * self.train_ratio)
+                indices = shuffled[:n_train] if self.split_type == "train" else shuffled[n_train:]
+                selected_times = [all_times[i] for i in indices]
+            else:
+                selected_times = all_times
+
+            for curr_time in selected_times:
                 max_goal_time = min(traj_len - self.end_slack - 1, curr_time + action_horizon)
-                if max_goal_time > curr_time:
-                    samples.append((traj_name, curr_time, max_goal_time))
+                samples.append((traj_name, curr_time, max_goal_time))
         return samples
 
     def __len__(self) -> int:
@@ -392,6 +413,9 @@ class EdgeNavigationDataset(Dataset):
         map_images = self.build_map_images(obs_images, goal_image)
         feat_text = self.build_language_feature(traj_name, traj_data, curr_time)
 
+        dist_to_goal = torch.as_tensor(
+            (goal_time - curr_time) / self.action_horizon, dtype=torch.float32
+        )
         return {
             "obs_images": obs_images,
             "goal_pose": goal_pose,
@@ -401,6 +425,7 @@ class EdgeNavigationDataset(Dataset):
             "feat_text": feat_text,
             "current_img": current_img,
             "actions": actions,
+            "dist_to_goal": dist_to_goal,
         }
 
 
