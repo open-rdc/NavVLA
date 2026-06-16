@@ -20,5 +20,6 @@ training/runs
 .codex
 .vscode
 __pycache__
+CLAUDE.md
 
 #例外ファイルを指定
