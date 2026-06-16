@@ -63,7 +63,7 @@ def test_run_returns_metrics_and_global_step():
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
     trainer = Train(model=model, loader=loader, optimizer=opt, device=torch.device("cpu"))
     metrics, global_step = trainer.run(global_step=0)
-    assert {"loss", "action_loss", "smooth_loss"} <= set(metrics.keys())
+    assert "loss" in metrics
     assert global_step == len(loader)
 
 

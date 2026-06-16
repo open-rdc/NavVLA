@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import math
 import pickle
+from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Iterable, List, Mapping, Tuple
 
 import numpy as np
@@ -28,13 +30,6 @@ REQUIRED_KEYS = (
     "actions",
 )
 
-KEY_ALIASES = {
-    "cur_image": "obs_images",
-    "goal_image_8": "goal_image",
-    "modality_id": "goal_mask",
-    "lan_prompt_feature": "feat_text",
-}
-
 MODALITY_USES = {
     0: {"satellite"},
     1: {"pose", "satellite"},
@@ -48,40 +43,25 @@ MODALITY_USES = {
 }
 
 
-class EdgeTensorDataset(Dataset):
-    """Load preprocessed OmniVLA-edge tensor samples from .pt/.pth files."""
+@lru_cache(maxsize=None)
+def _load_clip_text_encoder(clip_model: str) -> torch.nn.Module:
+    """Load a CLIP model once per process for text encoding only.
 
-    def __init__(self, data_dir: Path) -> None:
-        self.data_dir = data_dir
-        if not self.data_dir.exists():
-            raise FileNotFoundError(f"Dataset directory not found: {self.data_dir}")
+    Memoized so every :class:`EdgeNavigationDataset` in a process (and in each
+    DataLoader worker) shares one model instead of holding its own copy. The
+    unused visual tower is freed; a tiny shim preserves ``CLIP.dtype`` (defined
+    as ``visual.conv1.weight.dtype``) so ``encode_text`` keeps working.
+    """
+    import clip
 
-        self.sample_paths = sorted(
-            path
-            for pattern in ("*.pt", "*.pth")
-            for path in self.data_dir.glob(pattern)
-        )
-        if not self.sample_paths:
-            raise FileNotFoundError(f"No .pt/.pth samples found in {self.data_dir}")
-
-    def __len__(self) -> int:
-        return len(self.sample_paths)
-
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        sample = torch.load(self.sample_paths[index], map_location="cpu")
-        if not isinstance(sample, dict):
-            raise ValueError(f"Sample must be a dict: {self.sample_paths[index]}")
-
-        normalized = dict(sample)
-        for source_key, target_key in KEY_ALIASES.items():
-            if source_key in normalized and target_key not in normalized:
-                normalized[target_key] = normalized[source_key]
-
-        missing = [key for key in REQUIRED_KEYS if key not in normalized]
-        if missing:
-            raise ValueError(f"Missing sample keys {missing}: {self.sample_paths[index]}")
-
-        return {key: torch.as_tensor(normalized[key]) for key in REQUIRED_KEYS}
+    model, _ = clip.load(clip_model, device="cpu")
+    model = model.float().eval()
+    text_dtype = model.visual.conv1.weight.dtype
+    del model.visual
+    model.visual = SimpleNamespace(
+        conv1=SimpleNamespace(weight=SimpleNamespace(dtype=text_dtype))
+    )
+    return model
 
 
 class EdgeNavigationDataset(Dataset):
@@ -309,8 +289,7 @@ class EdgeNavigationDataset(Dataset):
             import clip
 
             if self.text_encoder is None:
-                text_encoder, _ = clip.load(self.clip_model, device="cpu")
-                self.text_encoder = text_encoder.float().eval()
+                self.text_encoder = _load_clip_text_encoder(self.clip_model)
             with torch.no_grad():
                 tokens = clip.tokenize(text, truncate=True)
                 self.text_feature_cache[text] = (

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
-
 import torch
 import torch.nn.functional as F
 
@@ -11,32 +9,25 @@ import torch.nn.functional as F
 def compute_action_loss(
     action_pred: torch.Tensor,
     action_label: torch.Tensor,
-    *,
-    smoothness_weight: float = 0.1,
-) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-    """Compute the OmniVLA-edge action loss.
+) -> torch.Tensor:
+    """Compute the GNM/ViNT-style action loss.
+
+    A single MSE over the full action tensor ``[B, len_traj, 2 or 4]``
+    (normalized ego waypoints plus, when ``learn_angle``, the unit cos/sin
+    heading) -- the same combined L2 GNM/ViNT use. The per-dimension scale is
+    handled by the dataset normalization, not by separate weights, and there is
+    no smoothness term (that is OmniVLA-specific).
 
     Args:
         action_pred: Predicted actions ``[B, len_traj, 2 or 4]``.
         action_label: Ground-truth actions, same shape as ``action_pred``.
-        smoothness_weight: Weight of the trajectory-smoothness term (reference: 0.1).
 
     Returns:
-        ``(total_loss, parts)`` where ``parts`` holds ``loss``, ``action_loss`` and
-        ``smooth_loss`` tensors.
+        The scalar MSE loss.
     """
     if action_pred.shape != action_label.shape:
         raise ValueError(
             f"action_pred and action_label must match: {tuple(action_pred.shape)} "
             f"vs {tuple(action_label.shape)}"
         )
-
-    action_loss = F.mse_loss(action_pred, action_label)
-
-    if action_pred.shape[1] >= 2:
-        smooth_loss = F.mse_loss(action_pred[:, :-1], action_pred[:, 1:])
-    else:
-        smooth_loss = torch.zeros((), device=action_pred.device, dtype=action_pred.dtype)
-
-    total = action_loss + smoothness_weight * smooth_loss
-    return total, {"loss": total, "action_loss": action_loss, "smooth_loss": smooth_loss}
+    return F.mse_loss(action_pred, action_label)

@@ -6,12 +6,25 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import ConcatDataset, DataLoader
 import yaml
 
 from training.data.dataset import EdgeNavigationDataset, collate_edge_samples
+from training.data.split import ensure_split
 from training.loop import main_loop
+
+
+def _seed_worker(worker_id: int) -> None:
+    """Reseed numpy in each DataLoader worker.
+
+    Workers fork the parent's numpy RNG state, so without this they would draw
+    identical goal-time sequences in ``EdgeNavigationDataset.__getitem__``. torch
+    already gives each worker a distinct seed; derive numpy's from it.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
 
 
 def create_dataloaders(
@@ -24,7 +37,10 @@ def create_dataloaders(
     if not isinstance(datasets_cfg, dict) or not datasets_cfg:
         raise ValueError("training/config/dataset.yaml must contain a non-empty datasets mapping.")
 
-    TRAIN_RATIO = 0.7
+    # The train/test split is generated here on first use and reused verbatim
+    # afterwards; there is no standalone split step (see training/data/split.py).
+    split_ratio = float(train_cfg.get("train_split_ratio", 0.8))
+    split_seed = int(train_cfg["seed"])
 
     train_datasets = []
     train_eval_datasets = {}
@@ -44,14 +60,10 @@ def create_dataloaders(
             raise ValueError(f"Missing required keys for dataset {dataset_name}: {missing}")
 
         data_folder = Path(data_config["data_folder"])
-        all_trajs = sorted(
-            d.name for d in data_folder.iterdir()
-            if d.is_dir() and (d / "traj_data.pkl").exists()
+        train_names, test_names = ensure_split(
+            data_folder, split=split_ratio, seed=split_seed
         )
-        if not all_trajs:
-            raise ValueError(f"No valid trajectories found in {data_folder}")
-        n = int(len(all_trajs) * TRAIN_RATIO)
-        splits = {"train": all_trajs[:n], "test": all_trajs[n:]}
+        splits = {"train": train_names, "test": test_names}
 
         for data_split_type, traj_names in splits.items():
             if not traj_names:
@@ -83,34 +95,31 @@ def create_dataloaders(
     if not train_datasets:
         raise ValueError("No train datasets were configured in dataset.yaml.")
 
-    train_loader = DataLoader(
-        ConcatDataset(train_datasets),
-        batch_size=int(train_cfg["batch_size"]),
-        shuffle=True,
-        num_workers=int(train_cfg["num_workers"]),
-        collate_fn=collate_edge_samples,
-        pin_memory=torch.cuda.is_available(),
+    num_workers = int(train_cfg["num_workers"])
+    batch_size = int(train_cfg["batch_size"])
+    pin_memory = torch.cuda.is_available()
+
+    def build_loader(dataset, *, shuffle: bool, persistent: bool) -> DataLoader:
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            collate_fn=collate_edge_samples,
+            pin_memory=pin_memory,
+            worker_init_fn=_seed_worker,
+            persistent_workers=persistent and num_workers > 0,
+        )
+
+    train_loader = build_loader(
+        ConcatDataset(train_datasets), shuffle=True, persistent=True
     )
     train_eval_dataloaders = {
-        dataset_type: DataLoader(
-            dataset,
-            batch_size=int(train_cfg["batch_size"]),
-            shuffle=False,
-            num_workers=int(train_cfg["num_workers"]),
-            collate_fn=collate_edge_samples,
-            pin_memory=torch.cuda.is_available(),
-        )
+        dataset_type: build_loader(dataset, shuffle=False, persistent=False)
         for dataset_type, dataset in train_eval_datasets.items()
     }
     test_dataloaders = {
-        dataset_type: DataLoader(
-            dataset,
-            batch_size=int(train_cfg["batch_size"]),
-            shuffle=False,
-            num_workers=int(train_cfg["num_workers"]),
-            collate_fn=collate_edge_samples,
-            pin_memory=torch.cuda.is_available(),
-        )
+        dataset_type: build_loader(dataset, shuffle=False, persistent=False)
         for dataset_type, dataset in test_datasets.items()
     }
     for dataset_type, dataset in test_datasets.items():
@@ -166,8 +175,7 @@ def main() -> int:
 
     data_root = navvla_root / "data"
     for ds_cfg in (dataset_cfg.get("datasets") or {}).values():
-        p = Path(str(ds_cfg["data_folder"]))
-        ds_cfg["data_folder"] = str(data_root / p)
+        ds_cfg["data_folder"] = str(data_root / Path(str(ds_cfg["data_folder"])))
 
     train_loader, train_eval_dataloaders, test_dataloaders = create_dataloaders(
         train_cfg=train_cfg,

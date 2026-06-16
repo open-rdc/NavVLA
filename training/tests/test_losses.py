@@ -1,9 +1,9 @@
 """Tests for the OmniVLA-edge fine-tuning action loss.
 
-The loss mirrors OmniVLA's in-package nav training (vla-scripts/train_omnivla.py:404):
-``MSE(pred, label)`` over all action dims plus a ``0.1 * MSE`` trajectory-smoothness
-term computed on the predicted consecutive waypoints. (The object-pose term in the
-reference is omitted: it needs an object-position label NavVLA does not provide.)
+GNM/ViNT design: a single MSE over the full action tensor (normalized ego
+waypoints plus, when ``learn_angle``, the unit cos/sin heading). The per-dim
+scale is handled by the dataset normalization, not by separate weights, and
+there is NO smoothness term (that is an OmniVLA-specific addition).
 """
 
 from __future__ import annotations
@@ -14,55 +14,43 @@ import torch
 from training.losses import compute_action_loss
 
 
-def test_action_term_is_mse_over_all_dims():
+def test_action_loss_is_mse_over_all_dims():
     label = torch.zeros(2, 4, 4)
-    pred = torch.full((2, 4, 4), 0.5)  # constant across time -> zero smoothness
-    total, parts = compute_action_loss(pred, label)
-    assert parts["action_loss"].item() == pytest.approx(0.25, abs=1e-6)  # 0.5^2
-    assert parts["smooth_loss"].item() == pytest.approx(0.0, abs=1e-6)
-    assert total.item() == pytest.approx(0.25, abs=1e-6)
+    pred = torch.full((2, 4, 4), 0.5)
+    loss = compute_action_loss(pred, label)
+    assert loss.item() == pytest.approx(0.25, abs=1e-6)  # 0.5^2
 
 
-def test_perfect_constant_trajectory_is_zero():
-    label = torch.full((2, 4, 4), 0.3)  # constant trajectory -> no smoothness penalty
-    total, parts = compute_action_loss(label.clone(), label)
-    assert parts["action_loss"].item() == pytest.approx(0.0, abs=1e-6)
-    assert parts["smooth_loss"].item() == pytest.approx(0.0, abs=1e-6)
-    assert total.item() == pytest.approx(0.0, abs=1e-6)
+def test_perfect_prediction_is_zero():
+    label = torch.full((2, 4, 4), 0.3)
+    loss = compute_action_loss(label.clone(), label)
+    assert loss.item() == pytest.approx(0.0, abs=1e-6)
 
 
-def test_smoothness_penalizes_changing_waypoints():
-    label = torch.zeros(1, 3, 4)
-    pred = torch.zeros(1, 3, 4)
-    pred[0, :, 0] = torch.tensor([0.0, 1.0, 2.0])  # consecutive diff of 1.0 in dim 0
-    _, parts = compute_action_loss(pred, label, smoothness_weight=0.1)
-    # MSE over pred[:, :-1] vs pred[:, 1:]: two diffs of 1.0 among 8 elements -> 2/8
-    assert parts["smooth_loss"].item() == pytest.approx(0.25, abs=1e-6)
-
-
-def test_smoothness_weight_scales_total():
+def test_changing_waypoints_are_not_penalized_for_smoothness():
+    # A trajectory that changes over time must only be scored on its deviation
+    # from the label -- ViNT has no smoothness term penalizing consecutive steps.
     label = torch.zeros(1, 3, 4)
     pred = torch.zeros(1, 3, 4)
     pred[0, :, 0] = torch.tensor([0.0, 1.0, 2.0])
-    total0, parts = compute_action_loss(pred, label, smoothness_weight=0.0)
-    total1, _ = compute_action_loss(pred, label, smoothness_weight=0.1)
-    assert total0.item() == pytest.approx(parts["action_loss"].item(), abs=1e-6)
-    assert total1.item() == pytest.approx(parts["action_loss"].item() + 0.1 * 0.25, abs=1e-6)
-
-
-def test_single_step_has_no_smoothness():
-    label = torch.zeros(1, 1, 4)
-    pred = torch.ones(1, 1, 4)
-    total, parts = compute_action_loss(pred, label)
-    assert parts["smooth_loss"].item() == pytest.approx(0.0, abs=1e-6)
-    assert torch.isfinite(torch.tensor(total.item()))
+    loss = compute_action_loss(pred, label)
+    # pure MSE vs the zero label: (0 + 1 + 4) over 12 elements
+    assert loss.item() == pytest.approx(5.0 / 12.0, abs=1e-6)
 
 
 def test_works_without_angle_dims():
     label = torch.zeros(2, 4, 2)
     pred = torch.full((2, 4, 2), 0.5)
-    _, parts = compute_action_loss(pred, label)
-    assert parts["action_loss"].item() == pytest.approx(0.25, abs=1e-6)
+    loss = compute_action_loss(pred, label)
+    assert loss.item() == pytest.approx(0.25, abs=1e-6)
+
+
+def test_single_step_is_finite():
+    label = torch.zeros(1, 1, 4)
+    pred = torch.ones(1, 1, 4)
+    loss = compute_action_loss(pred, label)
+    assert loss.item() == pytest.approx(1.0, abs=1e-6)
+    assert torch.isfinite(loss)
 
 
 def test_shape_mismatch_raises():
@@ -72,10 +60,10 @@ def test_shape_mismatch_raises():
         compute_action_loss(pred, label)
 
 
-def test_total_is_differentiable():
+def test_loss_is_differentiable():
     label = torch.randn(2, 4, 4)
     pred = (label + 0.1).detach().clone().requires_grad_(True)
-    total, _ = compute_action_loss(pred, label)
-    total.backward()
+    loss = compute_action_loss(pred, label)
+    loss.backward()
     assert pred.grad is not None
     assert torch.isfinite(pred.grad).all()

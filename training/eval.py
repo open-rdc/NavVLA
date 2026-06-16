@@ -19,21 +19,16 @@ class Test:
         model: torch.nn.Module,
         loader: DataLoader,
         device: torch.device,
-        *,
-        smoothness_weight: float = 0.1,
     ) -> None:
         self.model = model
         self.loader = loader
         self.device = device
-        self.smoothness_weight = float(smoothness_weight)
 
     def run(self, max_steps: Optional[int] = None) -> Dict[str, float]:
         """Run one OmniVLA-edge test epoch."""
         self.model.eval()
 
         total_loss = 0.0
-        total_action = 0.0
-        total_smooth = 0.0
         total_batches = 0
 
         total_steps = len(self.loader) if max_steps is None else min(len(self.loader), max_steps)
@@ -53,22 +48,12 @@ class Test:
                     batch["feat_text"].float(),
                     batch["current_img"],
                 )
-                loss, parts = compute_action_loss(
-                    action_pred,
-                    batch["actions"].float(),
-                    smoothness_weight=self.smoothness_weight,
-                )
+                loss = compute_action_loss(action_pred, batch["actions"].float())
                 total_loss += float(loss.detach().cpu())
-                total_action += float(parts["action_loss"].detach().cpu())
-                total_smooth += float(parts["smooth_loss"].detach().cpu())
                 total_batches += 1
                 progress.set_postfix(loss=f"{float(loss.detach().cpu()):.4f}")
 
         if total_batches == 0:
             raise RuntimeError("Test loader produced no batches.")
 
-        return {
-            "loss": total_loss / total_batches,
-            "action_loss": total_action / total_batches,
-            "smooth_loss": total_smooth / total_batches,
-        }
+        return {"loss": total_loss / total_batches}

@@ -125,7 +125,6 @@ def main_loop(
         weight_decay=float(train_cfg["weight_decay"]),
     )
 
-    smoothness_weight = float(train_cfg.get("smoothness_weight", 0.1))
     max_grad_norm_cfg = train_cfg.get("max_grad_norm")
     max_grad_norm = None if max_grad_norm_cfg in (None, 0, 0.0) else float(max_grad_norm_cfg)
 
@@ -146,8 +145,7 @@ def main_loop(
     print(
         f"[NavVLA] optimizer=AdamW lr={float(train_cfg['learning_rate'])} "
         f"wd={float(train_cfg['weight_decay'])} scheduler={scheduler_type} "
-        f"warmup_epochs={warmup_epochs}/{epochs} max_grad_norm={max_grad_norm} "
-        f"smoothness_weight={smoothness_weight}"
+        f"warmup_epochs={warmup_epochs}/{epochs} max_grad_norm={max_grad_norm}"
     )
 
     Trainer = Train(
@@ -155,7 +153,6 @@ def main_loop(
         loader=train_loader,
         optimizer=optimizer,
         device=device,
-        smoothness_weight=smoothness_weight,
         max_grad_norm=max_grad_norm,
     )
     TrainEvaluators = {
@@ -163,7 +160,6 @@ def main_loop(
             model=model,
             loader=loader,
             device=device,
-            smoothness_weight=smoothness_weight,
         )
         for dataset_type, loader in train_eval_dataloaders.items()
     }
@@ -172,7 +168,6 @@ def main_loop(
             model=model,
             loader=loader,
             device=device,
-            smoothness_weight=smoothness_weight,
         )
         for dataset_type, loader in test_dataloaders.items()
     }
@@ -194,16 +189,16 @@ def main_loop(
         print(f"[NavVLA] epoch={epoch} train={train_metrics}")
         writer.add_scalar("loss/train_total", train_metrics["loss"], epoch)
 
-        train_eval_losses = []
-        for dataset_type, evaluator in TrainEvaluators.items():
-            metrics = evaluator.run(max_steps=None if max_test_steps is None else int(max_test_steps))
-            train_eval_losses.append(metrics["loss"])
-            print(f"[NavVLA] epoch={epoch} train[{dataset_type}]={metrics}")
-            writer.add_scalar(f"loss/train/{dataset_type}", metrics["loss"], epoch)
-        if train_eval_losses:
-            writer.add_scalar("loss/train_datasets_total", float(np.mean(train_eval_losses)), epoch)
-
         if epoch % eval_freq == 0:
+            train_eval_losses = []
+            for dataset_type, evaluator in TrainEvaluators.items():
+                metrics = evaluator.run(max_steps=None if max_test_steps is None else int(max_test_steps))
+                train_eval_losses.append(metrics["loss"])
+                print(f"[NavVLA] epoch={epoch} train[{dataset_type}]={metrics}")
+                writer.add_scalar(f"loss/train/{dataset_type}", metrics["loss"], epoch)
+            if train_eval_losses:
+                writer.add_scalar("loss/train_datasets_total", float(np.mean(train_eval_losses)), epoch)
+
             eval_losses = []
             for dataset_type, tester in Testers.items():
                 test_metrics = tester.run(
@@ -227,5 +222,7 @@ def main_loop(
     writer.close()
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), run_dir / "model_latest.pth")
+    final_path = run_dir / "model_final.pth"
+    torch.save(model.state_dict(), final_path)
+    print(f"[NavVLA] saved final model: {final_path}")
     return 0
