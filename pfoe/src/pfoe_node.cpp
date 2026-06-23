@@ -40,17 +40,11 @@ PFoENode::PFoENode(): Node("pfoe_node",
 
   pf_ = std::make_unique<ParticleFilter>(num_particles);
 
-  // Method B/C tuning (optional; sensible defaults if absent from YAML).
-  const double obs_temperature = has_parameter("obs_temperature")
-      ? get_parameter("obs_temperature").as_double() : 50.0;
-  const double p_back = has_parameter("p_back")
-      ? get_parameter("p_back").as_double() : 0.25;
-  const double p_stay = has_parameter("p_stay")
-      ? get_parameter("p_stay").as_double() : 0.50;
-  const double p_forward = has_parameter("p_forward")
-      ? get_parameter("p_forward").as_double() : 0.20;
-  const double p_skip = has_parameter("p_skip")
-      ? get_parameter("p_skip").as_double() : 0.05;
+  const double obs_temperature = get_parameter("obs_temperature").as_double();
+  const double p_back          = get_parameter("p_back").as_double();
+  const double p_stay          = get_parameter("p_stay").as_double();
+  const double p_forward       = get_parameter("p_forward").as_double();
+  const double p_skip          = get_parameter("p_skip").as_double();
   pf_->set_observation_temperature(obs_temperature);
   pf_->set_motion_model(p_back, p_stay, p_forward, p_skip);
 
