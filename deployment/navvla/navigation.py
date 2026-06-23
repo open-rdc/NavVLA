@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 import math
-from collections import deque
 from pathlib import Path
-from typing import Deque, Optional, Tuple
+from typing import Tuple
 from ament_index_python.packages import get_package_share_directory
 
 import clip
@@ -41,7 +39,6 @@ class OmniVLANavigationNode(Node):
         self.autonomous_flag = False
         self.context_queue = []
         self.obs_image = None
-        self.obs_cv_image = None
         self.package_share_dir = package_share_dir
 
         self.nav_cfg = load_yaml(nav_config_path)
@@ -59,7 +56,6 @@ class OmniVLANavigationNode(Node):
         self.debug_image_pub = self.create_publisher(Image, "/debug_image", 10)
 
         self.timer = self.create_timer(self.interval_ms / 1000.0, self.timer_callback)
-        self.get_logger().info("navigation.py node started")
 
     def init_params(self) -> None:
         self.context_size = self.nav_cfg.get("context_size", 5)
@@ -128,6 +124,7 @@ class OmniVLANavigationNode(Node):
         self.model, self.text_encoder, _ = load_model(str(weights_path), model_params, self.device)
         self.model = self.model.to(self.device).eval()
         self.text_encoder = self.text_encoder.to(self.device).eval()
+        self.get_logger().info(f"Weights loaded: {weights_path.name}")
 
     def init_model_modality(self) -> None:
         if self.use_goal_image:
@@ -160,7 +157,6 @@ class OmniVLANavigationNode(Node):
 
     def prompt_callback(self, msg: String) -> None:
         self.latest_prompt = str(msg.data)
-        self.get_logger().info(f"Prompt received: '{self.latest_prompt}'")
         if self.use_prompt:
             self.update_text_feature()
 
@@ -191,11 +187,6 @@ class OmniVLANavigationNode(Node):
             clip_size=self.clip_size,
             device=self.device,
         )
-
-        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
-        token = clip.tokenize(prompt, truncate=True).to(self.device)
-        with torch.no_grad():
-            self.feat_text = self.text_encoder.encode_text(token)
 
         with torch.no_grad():
             action_pred, _, _ = self.model(
@@ -291,17 +282,10 @@ class OmniVLANavigationNode(Node):
         return waypoints, float(linear_vel_limit), float(angular_vel_limit)
 
     def update_text_feature(self) -> None:
-        token = clip.tokenize(self.latest_prompt, truncate=True).to(self.device)
+        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
+        token = clip.tokenize(prompt, truncate=True).to(self.device)
         with torch.no_grad():
             self.feat_text = self.text_encoder.encode_text(token)
-
-    @staticmethod
-    def clip_angle(angle: float) -> float:
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-        return angle
 
 
 def main() -> int:
