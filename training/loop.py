@@ -36,7 +36,6 @@ def validate_config(
                 "weight_decay",
                 "num_workers",
                 "seed",
-                "save_freq",
                 "eval_freq",
             ),
         ),
@@ -111,12 +110,12 @@ def main_loop(
         mha_num_attention_layers=int(network_cfg["mha_num_attention_layers"]),
         mha_ff_dim_factor=int(network_cfg["mha_ff_dim_factor"]),
     )
-    if not weights_path.exists():
-        raise FileNotFoundError(f"OmniVLA-edge weights not found: {weights_path}")
-    
-    checkpoint = torch.load(weights_path, map_location="cpu")
-    state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-    model.load_state_dict(state_dict, strict=True)
+    if bool(train_cfg.get("pretrained", True)):
+        if not weights_path.exists():
+            raise FileNotFoundError(f"OmniVLA-edge weights not found: {weights_path}")
+        checkpoint = torch.load(weights_path, map_location="cpu")
+        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        model.load_state_dict(state_dict, strict=True)
     model = model.to(device)
 
     optimizer = torch.optim.AdamW(
@@ -131,7 +130,6 @@ def main_loop(
     epochs = int(train_cfg["epochs"])
     max_train_steps = train_cfg.get("max_train_steps")
     max_test_steps = train_cfg.get("max_test_steps")
-    save_freq = int(train_cfg["save_freq"])
     eval_freq = int(train_cfg["eval_freq"])
 
     scheduler_type = str(train_cfg.get("lr_scheduler_type", "cosine"))
@@ -180,6 +178,7 @@ def main_loop(
     print(f"[NavVLA] TensorBoard: {tensorboard_dir}")
 
     global_step = 0
+    best_eval_loss = float("inf")
     for epoch in range(1, epochs + 1):
         train_metrics, global_step = Trainer.run(
             max_steps=None if max_train_steps is None else int(max_train_steps),
@@ -208,13 +207,14 @@ def main_loop(
                 print(f"[NavVLA] epoch={epoch} test[{dataset_type}]={test_metrics}")
                 writer.add_scalar(f"loss/eval/{dataset_type}", test_metrics["loss"], epoch)
             if eval_losses:
-                writer.add_scalar("loss/eval_total", float(np.mean(eval_losses)), epoch)
-
-        if epoch % save_freq == 0:
-            run_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_path = run_dir / "model_latest.pth"
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"[NavVLA] saved={checkpoint_path}")
+                eval_loss = float(np.mean(eval_losses))
+                writer.add_scalar("loss/eval_total", eval_loss, epoch)
+                if eval_loss < best_eval_loss:
+                    best_eval_loss = eval_loss
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    best_path = run_dir / "model_best.pth"
+                    torch.save(model.state_dict(), best_path)
+                    print(f"[NavVLA] saved best (eval_loss={eval_loss:.6f}): {best_path}")
 
         scheduler.step()
         writer.add_scalar("lr_epoch", optimizer.param_groups[0]["lr"], epoch)

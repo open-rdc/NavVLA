@@ -36,6 +36,38 @@ datasets:
     metric_waypoint_spacing: 0.17
     modality_id: 7
 
+  tsudanuma_cosmos_junction:
+    data_folder: real/tsudanuma_cosmos/navvla_tsudanuma_cosmos_junction
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_cosmos_linestop:
+    data_folder: real/tsudanuma_cosmos/navvla_tsudanuma_cosmos_linestop
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_cosmos_nav:
+    data_folder: real/tsudanuma_cosmos/navvla_tsudanuma_cosmos_nav
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_cosmos_random:
+    data_folder: real/tsudanuma_cosmos/navvla_tsudanuma_cosmos_random
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
   # 3f_nav:
   #   data_folder: real/3f/navvla_3f_nav
   #   end_slack: 3

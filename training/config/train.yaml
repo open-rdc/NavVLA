@@ -1,11 +1,12 @@
 weights_path: training/weights/omnivla-edge.pth
+pretrained: true
 run_root_dir: training/runs
 
 epochs: 20
-batch_size: 8
+batch_size: 64
 learning_rate: 1.0e-4
 weight_decay: 0.01
-num_workers: 4
+num_workers: 8
 seed: 42
 train_split_ratio: 0.8
 
@@ -13,7 +14,6 @@ max_grad_norm: null
 lr_scheduler_type: cosine
 warmup_epochs: 2
 
-save_freq: 1
 eval_freq: 1
 max_train_steps: null
 max_test_steps: null
