@@ -37,6 +37,7 @@ PFoENode::PFoENode(): Node("pfoe_node",
   const double discount       = get_parameter("discount").as_double();
   weight_sum_thresh_          = get_parameter("weight_sum_thresh").as_double();
   retro_steps_                = get_parameter("retro_steps").as_int();
+  scatter_spread_             = get_parameter("scatter_spread").as_int();
 
   pf_ = std::make_unique<ParticleFilter>(num_particles);
 
@@ -56,9 +57,12 @@ PFoENode::PFoENode(): Node("pfoe_node",
   pf_->reset(episode_.get());
 
   feature_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>("/image_feature", 10, [this](const std_msgs::msg::Float32MultiArray::SharedPtr msg) { feature_callback(msg); });
+  set_time_sub_ = create_subscription<std_msgs::msg::Int32>("/pfoe/set_time_idx", 10, [this](const std_msgs::msg::Int32::SharedPtr msg) { set_time_callback(msg); });
+  manual_sub_ = create_subscription<std_msgs::msg::Bool>("/pfoe/manual", 10, [this](const std_msgs::msg::Bool::SharedPtr msg) { manual_callback(msg); });
 
-  prompt_pub_   = create_publisher<std_msgs::msg::String>("/prompt",       10);
-  time_idx_pub_ = create_publisher<std_msgs::msg::Int32>("/pfoe/time_idx", 10);
+  prompt_pub_    = create_publisher<std_msgs::msg::String>("/prompt",        10);
+  time_idx_pub_  = create_publisher<std_msgs::msg::Int32>("/pfoe/time_idx",  10);
+  particles_pub_ = create_publisher<std_msgs::msg::Int32MultiArray>("/pfoe/particles", 10);
 
   RCLCPP_INFO(get_logger(), "pfoe_node ready");
 }
@@ -71,23 +75,66 @@ void PFoENode::feature_callback(const std_msgs::msg::Float32MultiArray::SharedPt
   episode_->push_back(ev);
   if (episode_->size() < 2) return;
 
-  pf_->update(episode_.get(), weight_sum_thresh_, retro_steps_);
-  int t_star = pf_->best_time_idx();
-
-  if (!episode_->instructions.empty()) {
-    int inst_idx = t_star - 1;
-    if (inst_idx < 0) inst_idx = 0;
-    if (inst_idx >= static_cast<int>(episode_->instructions.size()))
-      inst_idx = static_cast<int>(episode_->instructions.size()) - 1;
-
-    auto prompt_msg = std_msgs::msg::String();
-    prompt_msg.data = episode_->instructions[inst_idx];
-    prompt_pub_->publish(prompt_msg);
+  int t_star;
+  if (manual_) {
+    t_star = manual_time_;
+  } else {
+    pf_->update(episode_.get(), weight_sum_thresh_, retro_steps_);
+    t_star = pf_->best_time_idx();
   }
+
+  publish_prompt(t_star);
 
   auto idx_msg = std_msgs::msg::Int32();
   idx_msg.data = t_star;
   time_idx_pub_->publish(idx_msg);
+
+  publish_particles();
+}
+
+void PFoENode::set_time_callback(const std_msgs::msg::Int32::SharedPtr msg)
+{
+  const int center = msg->data;
+  pf_->scatter(episode_.get(), center, scatter_spread_);
+  manual_time_ = center;
+
+  publish_prompt(center);
+
+  auto idx_msg = std_msgs::msg::Int32();
+  idx_msg.data = center;
+  time_idx_pub_->publish(idx_msg);
+
+  publish_particles();
+
+  RCLCPP_INFO(get_logger(), "scatter particles around node %d (spread %d)", center, scatter_spread_);
+}
+
+void PFoENode::manual_callback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  manual_ = msg->data;
+  RCLCPP_INFO(get_logger(), "manual mode: %s", manual_ ? "ON" : "OFF");
+}
+
+void PFoENode::publish_prompt(int t_star)
+{
+  if (episode_->instructions.empty()) return;
+
+  int inst_idx = t_star - 1;
+  if (inst_idx < 0) inst_idx = 0;
+  if (inst_idx >= static_cast<int>(episode_->instructions.size()))
+    inst_idx = static_cast<int>(episode_->instructions.size()) - 1;
+
+  auto prompt_msg = std_msgs::msg::String();
+  prompt_msg.data = episode_->instructions[inst_idx];
+  prompt_pub_->publish(prompt_msg);
+}
+
+void PFoENode::publish_particles()
+{
+  auto particles_msg = std_msgs::msg::Int32MultiArray();
+  particles_msg.data.reserve(pf_->particles.size());
+  for (const auto& p : pf_->particles) particles_msg.data.push_back(p.time);
+  particles_pub_->publish(particles_msg);
 }
 
 }  // namespace pfoe

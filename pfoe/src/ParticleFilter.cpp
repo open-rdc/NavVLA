@@ -26,6 +26,24 @@ void ParticleFilter::reset(Episode* ep)
   }
 }
 
+void ParticleFilter::scatter(Episode* ep, int center, int spread)
+{
+  const int max_time = ep->size() - 1;
+  int c = center;
+  if (c < 1)        c = 1;
+  if (c > max_time) c = max_time;
+  int lo = c - spread;
+  int hi = c + spread;
+  if (lo < 1)        lo = 1;
+  if (hi > max_time) hi = max_time;
+
+  const double w = 1.0 / static_cast<double>(particles.size());
+  for (auto& p : particles) {
+    p.time   = prob_.uniformRandInt(lo, hi);
+    p.weight = w;
+  }
+}
+
 void ParticleFilter::set_observation_temperature(double beta)
 {
   beta_ = beta;

@@ -11,6 +11,7 @@ public:
   explicit ParticleFilter(int num);
 
   void reset(Episode* ep);
+  void scatter(Episode* ep, int center, int spread);
   void update(Episode* ep, double weight_sum_thresh, int retro_steps);
   int  best_time_idx() const;
 

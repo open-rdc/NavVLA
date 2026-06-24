@@ -9,6 +9,7 @@ pfoe:
     retro_steps:       20      # cf. retrospectiveFilter(..., 20)
     backtrack:         1000    # cf. Episode episode(1000, 0.99)
     discount:          0.99    # cf. Episode episode(1000, 0.99)
+    scatter_spread:    3       # half-width of particle scatter on node click
 
     # --- observation model sharpness (temperature β in exp(β·cos)) ---
     obs_temperature:   50.0

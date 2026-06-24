@@ -41,6 +41,7 @@ install(DIRECTORY include/
 install(PROGRAMS
   scripts/clip_encoder_node.py
   scripts/record_episode.py
+  scripts/topomap_viz_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
