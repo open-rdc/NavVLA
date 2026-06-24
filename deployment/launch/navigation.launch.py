@@ -81,8 +81,5 @@ def generate_launch_description() -> LaunchDescription:
                     {"episode_data_dir": LaunchConfiguration("episode_data_dir")},
                 ],
             ),
-
-            
-
         ]
     )
