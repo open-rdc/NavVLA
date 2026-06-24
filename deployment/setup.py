@@ -62,6 +62,7 @@ setup(
     entry_points={
         "console_scripts": [
             "navigation_node = navvla.navigation:main",
+            "voice_node = navvla.voice_guidance:main",
         ],
     },
 )
