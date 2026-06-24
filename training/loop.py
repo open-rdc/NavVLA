@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
@@ -13,6 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from OmniVLA.inference.model_omnivla_edge import OmniVLA_edge
 from training.eval import Test
+from training.optim import build_scheduler
 from training.train import Train
 
 
@@ -34,7 +36,6 @@ def validate_config(
                 "weight_decay",
                 "num_workers",
                 "seed",
-                "save_freq",
                 "eval_freq",
             ),
         ),
@@ -109,12 +110,12 @@ def main_loop(
         mha_num_attention_layers=int(network_cfg["mha_num_attention_layers"]),
         mha_ff_dim_factor=int(network_cfg["mha_ff_dim_factor"]),
     )
-    if not weights_path.exists():
-        raise FileNotFoundError(f"OmniVLA-edge weights not found: {weights_path}")
-    
-    checkpoint = torch.load(weights_path, map_location="cpu")
-    state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-    model.load_state_dict(state_dict, strict=True)
+    if bool(train_cfg.get("pretrained", True)):
+        if not weights_path.exists():
+            raise FileNotFoundError(f"OmniVLA-edge weights not found: {weights_path}")
+        checkpoint = torch.load(weights_path, map_location="cpu")
+        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        model.load_state_dict(state_dict, strict=True)
     model = model.to(device)
 
     optimizer = torch.optim.AdamW(
@@ -123,43 +124,80 @@ def main_loop(
         weight_decay=float(train_cfg["weight_decay"]),
     )
 
-    Trainer = Train(model=model, loader=train_loader, optimizer=optimizer, device=device)
+    max_grad_norm_cfg = train_cfg.get("max_grad_norm")
+    max_grad_norm = None if max_grad_norm_cfg in (None, 0, 0.0) else float(max_grad_norm_cfg)
+
+    epochs = int(train_cfg["epochs"])
+    max_train_steps = train_cfg.get("max_train_steps")
+    max_test_steps = train_cfg.get("max_test_steps")
+    eval_freq = int(train_cfg["eval_freq"])
+
+    scheduler_type = str(train_cfg.get("lr_scheduler_type", "cosine"))
+    warmup_epochs = int(train_cfg.get("warmup_epochs", 0))
+    scheduler = build_scheduler(
+        optimizer,
+        scheduler_type=scheduler_type,
+        total_epochs=epochs,
+        warmup_epochs=warmup_epochs,
+    )
+    print(
+        f"[NavVLA] optimizer=AdamW lr={float(train_cfg['learning_rate'])} "
+        f"wd={float(train_cfg['weight_decay'])} scheduler={scheduler_type} "
+        f"warmup_epochs={warmup_epochs}/{epochs} max_grad_norm={max_grad_norm}"
+    )
+
+    Trainer = Train(
+        model=model,
+        loader=train_loader,
+        optimizer=optimizer,
+        device=device,
+        max_grad_norm=max_grad_norm,
+    )
     TrainEvaluators = {
-        dataset_type: Test(model=model, loader=loader, device=device)
+        dataset_type: Test(
+            model=model,
+            loader=loader,
+            device=device,
+        )
         for dataset_type, loader in train_eval_dataloaders.items()
     }
     Testers = {
-        dataset_type: Test(model=model, loader=loader, device=device)
+        dataset_type: Test(
+            model=model,
+            loader=loader,
+            device=device,
+        )
         for dataset_type, loader in test_dataloaders.items()
     }
 
-    max_train_steps = train_cfg.get("max_train_steps")
-    max_test_steps = train_cfg.get("max_test_steps")
-    save_freq = int(train_cfg["save_freq"])
-    eval_freq = int(train_cfg["eval_freq"])
     if SummaryWriter is None:
         raise ImportError("TensorBoard is not available. Install it with: pip install tensorboard")
-    tensorboard_dir = train_cfg.get("tensorboard_log_dir", run_dir / "tensorboard")
+    base_tb_dir = Path(str(train_cfg.get("tensorboard_log_dir", run_dir / "tensorboard")))
+    tensorboard_dir = base_tb_dir / datetime.now().strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=str(tensorboard_dir))
     print(f"[NavVLA] TensorBoard: {tensorboard_dir}")
 
-    for epoch in range(1, int(train_cfg["epochs"]) + 1):
-        train_metrics = Trainer.run(
-            max_steps=None if max_train_steps is None else int(max_train_steps)
+    global_step = 0
+    best_eval_loss = float("inf")
+    for epoch in range(1, epochs + 1):
+        train_metrics, global_step = Trainer.run(
+            max_steps=None if max_train_steps is None else int(max_train_steps),
+            writer=writer,
+            global_step=global_step,
         )
         print(f"[NavVLA] epoch={epoch} train={train_metrics}")
         writer.add_scalar("loss/train_total", train_metrics["loss"], epoch)
 
-        train_eval_losses = []
-        for dataset_type, evaluator in TrainEvaluators.items():
-            metrics = evaluator.run(max_steps=None if max_test_steps is None else int(max_test_steps))
-            train_eval_losses.append(metrics["loss"])
-            print(f"[NavVLA] epoch={epoch} train[{dataset_type}]={metrics}")
-            writer.add_scalar(f"loss/train/{dataset_type}", metrics["loss"], epoch)
-        if train_eval_losses:
-            writer.add_scalar("loss/train_datasets_total", float(np.mean(train_eval_losses)), epoch)
-
         if epoch % eval_freq == 0:
+            train_eval_losses = []
+            for dataset_type, evaluator in TrainEvaluators.items():
+                metrics = evaluator.run(max_steps=None if max_test_steps is None else int(max_test_steps))
+                train_eval_losses.append(metrics["loss"])
+                print(f"[NavVLA] epoch={epoch} train[{dataset_type}]={metrics}")
+                writer.add_scalar(f"loss/train/{dataset_type}", metrics["loss"], epoch)
+            if train_eval_losses:
+                writer.add_scalar("loss/train_datasets_total", float(np.mean(train_eval_losses)), epoch)
+
             eval_losses = []
             for dataset_type, tester in Testers.items():
                 test_metrics = tester.run(
@@ -169,16 +207,22 @@ def main_loop(
                 print(f"[NavVLA] epoch={epoch} test[{dataset_type}]={test_metrics}")
                 writer.add_scalar(f"loss/eval/{dataset_type}", test_metrics["loss"], epoch)
             if eval_losses:
-                writer.add_scalar("loss/eval_total", float(np.mean(eval_losses)), epoch)
+                eval_loss = float(np.mean(eval_losses))
+                writer.add_scalar("loss/eval_total", eval_loss, epoch)
+                if eval_loss < best_eval_loss:
+                    best_eval_loss = eval_loss
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    best_path = run_dir / "model_best.pth"
+                    torch.save(model.state_dict(), best_path)
+                    print(f"[NavVLA] saved best (eval_loss={eval_loss:.6f}): {best_path}")
 
-        if epoch % save_freq == 0:
-            run_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_path = run_dir / "model_latest.pth"
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"[NavVLA] saved={checkpoint_path}")
+        scheduler.step()
+        writer.add_scalar("lr_epoch", optimizer.param_groups[0]["lr"], epoch)
 
-        writer.close()
+    writer.close()
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), run_dir / "model_latest.pth")
+    final_path = run_dir / "model_final.pth"
+    torch.save(model.state_dict(), final_path)
+    print(f"[NavVLA] saved final model: {final_path}")
     return 0

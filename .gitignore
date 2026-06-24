@@ -2,7 +2,7 @@
 *.log
 *.urdf
 *.pyc
-*.pt
+*.pth
 
 #ディレクトリで指定
 /build
@@ -13,13 +13,13 @@
 /data
 
 training/weights/*.pth
-training/config/dataset.yaml
+training/config/*yaml
 training/runs
-training/dataset/
 
 #ファイル名で指定
 .codex
 .vscode
 __pycache__
+CLAUDE.md
 
 #例外ファイルを指定

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import cv2
 import numpy as np
@@ -68,10 +68,8 @@ def build_omnivla_edge_inputs(
     clip_size: Tuple[int, int],
     device: torch.device,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    obs_images = transform_images_PIL_mask(list(context_queue), mask_obs).to(device)
-    split_obs = torch.split(obs_images, 3, dim=1)
-    obs_image_cur = split_obs[-1].to(device)
-    obs_images = torch.cat(split_obs, dim=1).to(device)
+    obs_images = transform_images_PIL_mask(context_queue, mask_obs).to(device)
+    obs_image_cur = obs_images[:, -3:]
 
     cur_large_img = transform_images_PIL_mask(current_image.resize(clip_size), mask_clip).to(device)
     map_images = torch.cat(
@@ -80,6 +78,6 @@ def build_omnivla_edge_inputs(
             transform_images_map(satellite_goal).to(device),
             obs_image_cur,
         ),
-        axis=1,
+        dim=1,
     )
     return obs_images, map_images, cur_large_img

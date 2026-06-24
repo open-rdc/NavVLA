@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 import math
-from collections import deque
 from pathlib import Path
-from typing import Deque, Optional, Tuple
-import cv2
+from typing import Tuple
 from ament_index_python.packages import get_package_share_directory
 
 import clip
@@ -20,6 +17,7 @@ from OmniVLA.inference.utils_policy import (
     transform_images_PIL_mask,
 )
 from .preprocess import build_mask, build_omnivla_edge_inputs, image_to_cv2, load_yaml
+from .visualize import render_debug_image, to_image_msg
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
@@ -55,9 +53,9 @@ class OmniVLANavigationNode(Node):
         self.prompt_sub = self.create_subscription(String, "/prompt", self.prompt_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.path_pub = self.create_publisher(NavPath, "/path", 10)
+        self.debug_image_pub = self.create_publisher(Image, "/debug_image", 10)
 
         self.timer = self.create_timer(self.interval_ms / 1000.0, self.timer_callback)
-        self.get_logger().info("navigation.py node started")
 
     def init_params(self) -> None:
         self.context_size = self.nav_cfg.get("context_size", 5)
@@ -126,6 +124,7 @@ class OmniVLANavigationNode(Node):
         self.model, self.text_encoder, _ = load_model(str(weights_path), model_params, self.device)
         self.model = self.model.to(self.device).eval()
         self.text_encoder = self.text_encoder.to(self.device).eval()
+        self.get_logger().info(f"Weights loaded: {weights_path.name}")
 
     def init_model_modality(self) -> None:
         if self.use_goal_image:
@@ -142,8 +141,8 @@ class OmniVLANavigationNode(Node):
         else:
             goal_pose = [0.0, 0.0, 1.0, 0.0]
 
-        self.latest_prompt = "No language instruction"
-        self._update_text_feature()
+        self.latest_prompt = "Stop at the white line"
+        self.update_text_feature()
 
         self.satellite_current = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
         self.satellite_goal = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
@@ -151,19 +150,21 @@ class OmniVLANavigationNode(Node):
         self.goal_image_tensor = transform_images_PIL_mask(goal_pil, self.mask_goal).to(self.device)
         self.goal_pose_tensor = torch.tensor([goal_pose], dtype=torch.float32, device=self.device)
         self.modality_tensor = torch.tensor([self.modality_id], dtype=torch.long, device=self.device)
-        
 
     def autonomous_callback(self, msg: Bool) -> None:
         self.autonomous_flag = bool(msg.data)
+        self.get_logger().info(f"Autonomous mode: {self.autonomous_flag}")
 
     def prompt_callback(self, msg: String) -> None:
         self.latest_prompt = str(msg.data)
         if self.use_prompt:
-            self._update_text_feature()
+            self.update_text_feature()
 
     def image_callback(self, msg: Image) -> None:
         cv_image = image_to_cv2(msg, self.clip_size)
-        self.obs_image = PILImage.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
+        self.obs_image = PILImage.fromarray(cv_image[:, :, ::-1])
+        debug_img = render_debug_image(cv_image, self.latest_prompt)
+        self.debug_image_pub.publish(to_image_msg(debug_img, msg.header.stamp))
 
 
     def timer_callback(self) -> None:
@@ -186,11 +187,6 @@ class OmniVLANavigationNode(Node):
             clip_size=self.clip_size,
             device=self.device,
         )
-
-        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
-        token = clip.tokenize(prompt, truncate=True).to(self.device)
-        with torch.no_grad():
-            self.feat_text = self.text_encoder.encode_text(token)
 
         with torch.no_grad():
             action_pred, _, _ = self.model(
@@ -244,12 +240,12 @@ class OmniVLANavigationNode(Node):
         dx *= self.waypoint_spacing
         dy *= self.waypoint_spacing
 
-        eps = 1e-8
-        dt = 1.0 / 3.0
+        eps = 0.1
+        dt = 1.0 / 5.0
 
         if abs(dx) < eps and abs(dy) < eps:
             linear_vel = 0.0
-            angular_vel = self.clip_angle(math.atan2(hy, hx)) / dt
+            angular_vel = 0.0
         elif abs(dx) < eps:
             linear_vel = 0.0
             angular_vel = math.copysign(math.pi / (2.0 * dt), dy)
@@ -257,7 +253,7 @@ class OmniVLANavigationNode(Node):
             linear_vel = dx / dt
             angular_vel = math.atan(dy / dx) / dt
 
-        linear_vel = float(np.clip(linear_vel, 0.0, 0.5))
+        linear_vel = float(np.clip(linear_vel, 0.0, 1.0))
         angular_vel = float(np.clip(angular_vel, -1.0, 1.0))
 
         maxv = float(self.linear_max_vel)
@@ -285,13 +281,11 @@ class OmniVLANavigationNode(Node):
 
         return waypoints, float(linear_vel_limit), float(angular_vel_limit)
 
-    @staticmethod
-    def clip_angle(angle: float) -> float:
-        while angle > math.pi:
-            angle -= 2.0 * math.pi
-        while angle < -math.pi:
-            angle += 2.0 * math.pi
-        return angle
+    def update_text_feature(self) -> None:
+        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
+        token = clip.tokenize(prompt, truncate=True).to(self.device)
+        with torch.no_grad():
+            self.feat_text = self.text_encoder.encode_text(token)
 
 
 def main() -> int:

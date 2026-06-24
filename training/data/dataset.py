@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import math
 import pickle
+from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Iterable, List, Mapping, Tuple
 
 import numpy as np
@@ -28,13 +30,6 @@ REQUIRED_KEYS = (
     "actions",
 )
 
-KEY_ALIASES = {
-    "cur_image": "obs_images",
-    "goal_image_8": "goal_image",
-    "modality_id": "goal_mask",
-    "lan_prompt_feature": "feat_text",
-}
-
 MODALITY_USES = {
     0: {"satellite"},
     1: {"pose", "satellite"},
@@ -48,40 +43,25 @@ MODALITY_USES = {
 }
 
 
-class EdgeTensorDataset(Dataset):
-    """Load preprocessed OmniVLA-edge tensor samples from .pt/.pth files."""
+@lru_cache(maxsize=None)
+def _load_clip_text_encoder(clip_model: str) -> torch.nn.Module:
+    """Load a CLIP model once per process for text encoding only.
 
-    def __init__(self, data_dir: Path) -> None:
-        self.data_dir = data_dir
-        if not self.data_dir.exists():
-            raise FileNotFoundError(f"Dataset directory not found: {self.data_dir}")
+    Memoized so every :class:`EdgeNavigationDataset` in a process (and in each
+    DataLoader worker) shares one model instead of holding its own copy. The
+    unused visual tower is freed; a tiny shim preserves ``CLIP.dtype`` (defined
+    as ``visual.conv1.weight.dtype``) so ``encode_text`` keeps working.
+    """
+    import clip
 
-        self.sample_paths = sorted(
-            path
-            for pattern in ("*.pt", "*.pth")
-            for path in self.data_dir.glob(pattern)
-        )
-        if not self.sample_paths:
-            raise FileNotFoundError(f"No .pt/.pth samples found in {self.data_dir}")
-
-    def __len__(self) -> int:
-        return len(self.sample_paths)
-
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        sample = torch.load(self.sample_paths[index], map_location="cpu")
-        if not isinstance(sample, dict):
-            raise ValueError(f"Sample must be a dict: {self.sample_paths[index]}")
-
-        normalized = dict(sample)
-        for source_key, target_key in KEY_ALIASES.items():
-            if source_key in normalized and target_key not in normalized:
-                normalized[target_key] = normalized[source_key]
-
-        missing = [key for key in REQUIRED_KEYS if key not in normalized]
-        if missing:
-            raise ValueError(f"Missing sample keys {missing}: {self.sample_paths[index]}")
-
-        return {key: torch.as_tensor(normalized[key]) for key in REQUIRED_KEYS}
+    model, _ = clip.load(clip_model, device="cpu")
+    model = model.float().eval()
+    text_dtype = model.visual.conv1.weight.dtype
+    del model.visual
+    model.visual = SimpleNamespace(
+        conv1=SimpleNamespace(weight=SimpleNamespace(dtype=text_dtype))
+    )
+    return model
 
 
 class EdgeNavigationDataset(Dataset):
@@ -97,7 +77,7 @@ class EdgeNavigationDataset(Dataset):
     def __init__(
         self,
         data_folder: str | Path,
-        data_split_folder: str | Path,
+        traj_names: List[str],
         dataset_name: str,
         image_size: Tuple[int, int],
         waypoint_spacing: int,
@@ -114,7 +94,6 @@ class EdgeNavigationDataset(Dataset):
         clip_model: str = DEFAULT_CLIP_MODEL,
     ) -> None:
         self.data_folder = Path(data_folder)
-        self.data_split_folder = Path(data_split_folder)
         self.dataset_name = dataset_name
         self.image_size = tuple(int(v) for v in image_size)
         self.waypoint_spacing = int(waypoint_spacing)
@@ -142,12 +121,12 @@ class EdgeNavigationDataset(Dataset):
                 "Use modality_id values without satellite input, or extend EdgeNavigationDataset "
                 "with explicit map image loading."
             )
-        self.traj_names = self.load_traj_names()
+        self.traj_names = list(traj_names)
         self.trajectory_cache: Dict[str, Mapping[str, np.ndarray]] = {}
         self.index_to_data = self.build_sample_index()
         if not self.index_to_data:
             raise ValueError(
-                f"No trainable samples found for dataset={dataset_name} split={self.data_split_folder}"
+                f"No trainable samples found for dataset={dataset_name}"
             )
 
         self.image_transform = transforms.Compose(
@@ -171,17 +150,6 @@ class EdgeNavigationDataset(Dataset):
 
     def uses_modality(self, name: str) -> bool:
         return name in self.modality_uses
-
-    def load_traj_names(self) -> List[str]:
-        traj_names_file = (
-            self.data_split_folder
-            if self.data_split_folder.is_file()
-            else self.data_split_folder / "traj_names.txt"
-        )
-        if not traj_names_file.exists():
-            raise FileNotFoundError(f"Missing traj_names.txt: {traj_names_file}")
-        names = [line.strip() for line in traj_names_file.read_text().splitlines()]
-        return [name for name in names if name]
 
     def load_trajectory(self, traj_name: str) -> Mapping[str, np.ndarray]:
         if traj_name not in self.trajectory_cache:
@@ -321,8 +289,7 @@ class EdgeNavigationDataset(Dataset):
             import clip
 
             if self.text_encoder is None:
-                text_encoder, _ = clip.load(self.clip_model, device="cpu")
-                self.text_encoder = text_encoder.float().eval()
+                self.text_encoder = _load_clip_text_encoder(self.clip_model)
             with torch.no_grad():
                 tokens = clip.tokenize(text, truncate=True)
                 self.text_feature_cache[text] = (
@@ -377,10 +344,10 @@ class EdgeNavigationDataset(Dataset):
             return self.get_prompt_text_feature(traj_name, curr_time)
         return self.get_text_feature(traj_data, curr_time)
 
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        base_index = index // self.goals_per_obs
-        traj_name, curr_time, max_goal_time = self.index_to_data[base_index]
-        goal_time = np.random.randint(curr_time + 1, max_goal_time + 1)
+    def build_sample(
+        self, traj_name: str, curr_time: int, goal_time: int
+    ) -> Dict[str, torch.Tensor]:
+        """Assemble one training sample for an explicit ``goal_time``."""
         traj_data = self.load_trajectory(traj_name)
 
         obs_images = self.build_observation_images(traj_name, curr_time)
@@ -402,6 +369,12 @@ class EdgeNavigationDataset(Dataset):
             "current_img": current_img,
             "actions": actions,
         }
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        base_index = index // self.goals_per_obs
+        traj_name, curr_time, max_goal_time = self.index_to_data[base_index]
+        goal_time = np.random.randint(curr_time + 1, max_goal_time + 1)
+        return self.build_sample(traj_name, curr_time, goal_time)
 
 
 def collate_edge_samples(

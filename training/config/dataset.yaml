@@ -4,14 +4,77 @@ normalize: true
 clip_model: ViT-B/32
 
 datasets:
-  sample:
-    data_folder: /home/<username>/nomad_dataset/sample
-    train: /home/<username>/data_splits/sample/train/ # path to train folder with traj_names.txt
-    test: /home/<username>/data_splits/sample/test/ # path to test folder with traj_names.txt
-    end_slack: 3 # because many trajectories end in collisions
-    goals_per_obs: 1 # how many goals are sampled per observation
+  tsudanuma_junction:
+    data_folder: real/tsudanuma/navvla_tsudanuma_junction
+    end_slack: 3
+    goals_per_obs: 1
     waypoint_spacing: 1
-    modality_id: 6
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_linestop:
+    data_folder: real/tsudanuma/navvla_tsudanuma_linestop
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_nav:
+    data_folder: real/tsudanuma/navvla_tsudanuma_nav
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_random:
+    data_folder: real/tsudanuma/navvla_tsudanuma_random
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_cosmos_junction:
+    data_folder: real/tsudanuma_cosmos/navvla_tsudanuma_cosmos_junction
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_cosmos_linestop:
+    data_folder: real/tsudanuma_cosmos/navvla_tsudanuma_cosmos_linestop
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_cosmos_nav:
+    data_folder: real/tsudanuma_cosmos/navvla_tsudanuma_cosmos_nav
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  tsudanuma_cosmos_random:
+    data_folder: real/tsudanuma_cosmos/navvla_tsudanuma_cosmos_random
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 1
+    metric_waypoint_spacing: 0.17
+    modality_id: 7
+
+  # 3f_nav:
+  #   data_folder: real/3f/navvla_3f_nav
+  #   end_slack: 3
+  #   goals_per_obs: 1
+  #   waypoint_spacing: 1
+  #   metric_waypoint_spacing: 0.17
+  #   modality_id: 6
 
 # modality flags (pose/image/language) are derived automatically from modality_id
 # 0: satellite only
