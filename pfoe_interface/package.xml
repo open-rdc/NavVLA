@@ -1,23 +1,22 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>pfoe</name>
+  <name>pfoe_interface</name>
   <version>0.1.0</version>
-  <description>Particle Filter on Episode for NavVLA language instruction supply.</description>
+  <description>RViz interactive marker interface for PFoE particle operations.</description>
   <maintainer email="s21c1135sc@s.chibakoudai.jp">kyo</maintainer>
   <license>MIT</license>
 
-  <buildtool_depend>ament_cmake</buildtool_depend>
-
-  <depend>rclcpp</depend>
-  <depend>std_msgs</depend>
+  <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>interactive_markers</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
 
   <export>
-    <build_type>ament_cmake</build_type>
+    <build_type>ament_python</build_type>
   </export>
 </package>

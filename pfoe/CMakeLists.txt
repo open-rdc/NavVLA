@@ -43,5 +43,4 @@ install(PROGRAMS
   scripts/record_episode.py
   DESTINATION lib/${PROJECT_NAME}
 )
-
 ament_package()

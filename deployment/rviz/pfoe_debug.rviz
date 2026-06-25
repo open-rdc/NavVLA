@@ -1,0 +1,79 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane Cell Count: 50
+      Cell Size: 1
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Topomap
+      Enabled: true
+      Topic:
+        Value: /topomap/markers
+        Durability Policy: Transient Local
+        Depth: 1
+    - Class: rviz_default_plugins/PoseArray
+      Name: Particles
+      Enabled: true
+      Shape: Arrow (Flat)
+      Color: 255; 85; 0
+      Topic:
+        Value: /pfoe/particles_viz
+        Durability Policy: Volatile
+        Depth: 10
+    - Class: rviz_default_plugins/InteractiveMarkers
+      Name: PfNodes
+      Enabled: true
+      Interactive Markers Namespace: /pfoe_interface
+      Show Axes: false
+      Show Descriptions: false
+      Show Visual Aids: false
+    - Class: rviz_default_plugins/Path
+      Name: Path
+      Enabled: true
+      Color: 25; 255; 255
+      Topic:
+        Value: /path
+        Durability Policy: Volatile
+        Depth: 10
+  Global Options:
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/PublishPoint
+      Topic:
+        Value: /clicked_point
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Orbit
+      Distance: 30
+      Yaw: 0.785398
+      Pitch: 0.785398
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Near Clip Distance: 0.01
+      Target Frame: <Fixed Frame>
+    Saved:
+      - Class: rviz_default_plugins/TopDownOrtho
+        Name: TopDownOrtho
+        Scale: 20
+        Angle: 0
+        X: 0
+        Y: 0
+Window Geometry:
+  Height: 800
+  Width: 1200

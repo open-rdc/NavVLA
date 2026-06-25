@@ -36,7 +36,10 @@ setup(
         (f"share/{package_name}", ["package.xml"]),
         (
             f"share/{package_name}/launch",
-            [os.path.join("launch", "navigation.launch.py")],
+            [
+                os.path.join("launch", "navigation.launch.py"),
+                os.path.join("launch", "pfoe_debug.launch.py"),
+            ],
         ),
         (
             f"share/{package_name}/config",
@@ -45,6 +48,10 @@ setup(
                 os.path.join("config", "preprocess.yaml"),
                 os.path.join("config", "pfoe.yaml"),
             ],
+        ),
+        (
+            f"share/{package_name}/rviz",
+            [os.path.join("rviz", "pfoe_debug.rviz")],
         ),
         (
             f"share/{package_name}/deployment/weights",
