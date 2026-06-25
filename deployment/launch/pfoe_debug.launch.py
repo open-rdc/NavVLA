@@ -34,9 +34,9 @@ def generate_launch_description() -> LaunchDescription:
                 description="Episode name under episode_data_dir",
             ),
             Node(
-                package="pfoe",
-                executable="topomap_viz_node.py",
-                name="topomap_viz_node",
+                package="pfoe_interface",
+                executable="pf_marker_node",
+                name="pf_marker_node",
                 output="screen",
                 parameters=[
                     {

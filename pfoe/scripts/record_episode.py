@@ -13,12 +13,27 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
-import clip
 from PIL import Image as PILImage
 
 
+def write_embeddings_bin(out_file, embeddings) -> None:
+    """Write embeddings as ``int32 N, int32 dim, float32[N][dim]`` (little-endian).
+
+    Matches the layout read by ``pfoe/src/Episode.cpp``.
+    """
+    arr = np.ascontiguousarray(embeddings, dtype="<f4")
+    if arr.ndim != 2:
+        raise ValueError(f"embeddings must be 2-D [N, dim], got shape {arr.shape}")
+    n, dim = arr.shape
+    with open(out_file, "wb") as f:
+        f.write(struct.pack("<ii", n, dim))
+        f.write(arr.tobytes())
+
+
 def encode_episode(data_folder: Path, traj_name: str, clip_model: str) -> None:
+    import torch
+    import clip
+
     traj_dir = data_folder / traj_name
     prompt_file = traj_dir / "traj_prompt.txt"
     out_file = traj_dir / "clip_embeddings.bin"
@@ -61,10 +76,7 @@ def encode_episode(data_folder: Path, traj_name: str, clip_model: str) -> None:
 
     dim = embeddings[0].shape[0]
     print(f"Writing {out_file}  (N={n}, dim={dim})")
-    with open(out_file, "wb") as f:
-        f.write(struct.pack("<ii", n, dim))
-        for feat in embeddings:
-            f.write(feat.tobytes())
+    write_embeddings_bin(out_file, np.stack(embeddings))
 
     print("Done.")
 

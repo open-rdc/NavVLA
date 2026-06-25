@@ -41,8 +41,16 @@ install(DIRECTORY include/
 install(PROGRAMS
   scripts/clip_encoder_node.py
   scripts/record_episode.py
-  scripts/topomap_viz_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_scatter test/test_scatter.cpp)
+  target_include_directories(test_scatter PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_link_libraries(test_scatter pfoe_core)
+endif()
 
 ament_package()
