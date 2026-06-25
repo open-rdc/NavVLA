@@ -66,7 +66,6 @@ void ParticleFilter::update(Episode* ep, double weight_sum_thresh, int retro_ste
   Event* cur = ep->current();
   moveAndBayes(ep, &particles, cur);
   double sum = sumWeight(&particles);
-  std::cerr << "sum of weights: " << sum << std::endl;
   if (sum > weight_sum_thresh) {
     resampling(&particles);
   } else {
