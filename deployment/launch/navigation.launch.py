@@ -53,6 +53,16 @@ def generate_launch_description() -> LaunchDescription:
                     LaunchConfiguration("preprocess_config"),
                 ],
             ),
+            # voice guidance
+            Node(
+                package="navvla",
+                executable="voice_node",
+                name="voice_guidance",
+                output="screen",
+                emulate_tty=True,
+            ),
+
+
             # pfoe: CLIP encoder (Python)
             Node(
                 package="pfoe",
