@@ -12,6 +12,11 @@ deployment_weight_files = [
     for path in sorted((deployment_dir / "weights").glob("*"))
     if path.is_file()
 ]
+voice_files = [
+    str(path.relative_to(deployment_dir))
+    for path in sorted((deployment_dir / "voice").glob("*"))
+    if path.is_file()
+]
 
 data_files_by_dest: dict[str, list[str]] = {}
 for path in sorted((repo_root / "data").rglob("*")):
@@ -49,6 +54,10 @@ setup(
         (
             f"share/{package_name}/deployment/weights",
             deployment_weight_files,
+        ),
+        (
+            f"share/{package_name}/voice",
+            voice_files,
         ),
         *sorted(data_files_by_dest.items()),
     ],

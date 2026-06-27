@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 import queue
-import threading
-
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-import pyttsx3
+import threading
 
+import json
+import os
+import shutil
+import subprocess
+from ament_index_python.packages import get_package_share_directory
 
 class Voice_Guidance(Node):
     def __init__(self) -> None:
@@ -16,8 +19,14 @@ class Voice_Guidance(Node):
 
         self._last_spoken = None
         self._queue = queue.Queue()
-
-        self._worker = threading.Thread(target=self._tts_loop, daemon=True)
+        self._voice_dir = os.path.join(get_package_share_directory("navvla"), "voice")
+        try:
+            with open (os.path.join(self._voice_dir, "prompts.json")) as f:
+                self._prompt_map =json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            self.get_logger().error(f"failed to load prompts.json: {e}")
+            self._prompt_map = {}
+        self._worker = threading.Thread(target=self._play_loop, daemon=True)
         self._worker.start()
 
         self.create_subscription(String, "/prompt", self.prompt_callback, 10)
@@ -34,16 +43,23 @@ class Voice_Guidance(Node):
         self._last_spoken = text
         self._queue.put(text)
 
-    def _tts_loop(self) -> None:
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 80)
-        engine.setProperty("volume", 1.0)
-
+    def _play_loop(self) -> None:
         while True:
             text = self._queue.get()
-            engine.say(text)
-            engine.runAndWait()
+            wav = self._prompt_map.get(text)
+            if wav is None:
+                self.get_logger().warn(f"no wav for: {text!r}")
+                continue
+            self._play(os.path.join(self._voice_dir, wav))
 
+    def _play(self, path: str) -> None:
+        player = shutil.which("paplay") or shutil.which("aplay")
+        if player is None:
+            self.get_logger().error("no audio player (paplay/aplay)")
+            return
+        subprocess.run([player, path], check=False)
+        
+        
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = Voice_Guidance()
