@@ -20,7 +20,7 @@ SAMPLE_INTERVAL = 0.2
 
 
 class DataCreator(Node):
-    CROP_SIZE = 224
+    IMAGE_SIZE = 224
 
     def __init__(self):
         super().__init__('create_data')
@@ -65,18 +65,11 @@ class DataCreator(Node):
         self.current_episode_dir.mkdir(parents=True, exist_ok=True)
         self.get_logger().info(f'⚪Create data started: {self.current_episode_dir.name}')
 
-    def _center_crop(self, image):
+    def _resize_image(self, image):
         height, width = image.shape[:2]
-        if width <= height:
-            raise ValueError(f'Expected aspect ratio > 1 (width > height), got {width}x{height}')
 
-        side = height
-        top = 0
-        left = (width - side) // 2
-        square_image = image[top:top + side, left:left + side]
-
-        interpolation = cv2.INTER_AREA if side >= self.CROP_SIZE else cv2.INTER_LINEAR
-        return cv2.resize(square_image, (self.CROP_SIZE, self.CROP_SIZE), interpolation=interpolation)
+        interpolation = cv2.INTER_AREA if min(height, width) >= self.IMAGE_SIZE else cv2.INTER_LINEAR
+        return cv2.resize(image, (self.IMAGE_SIZE, self.IMAGE_SIZE), interpolation=interpolation)
 
     def _yaw_from_quaternion(self, x, y, z, w):
         siny_cosp = 2.0 * (w * z + x * y)
@@ -132,11 +125,10 @@ class DataCreator(Node):
             return
 
         image = self.latest_image
-        cropped_image = self._center_crop(image)
-
+        resized_image = self._resize_image(image)
 
         image_path = self.current_episode_dir / f'{self.current_sample_index}.jpg'
-        cv2.imwrite(str(image_path), cropped_image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        cv2.imwrite(str(image_path), resized_image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
 
         pose = self.latest_odom.pose.pose
         position = pose.position

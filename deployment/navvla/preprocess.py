@@ -49,13 +49,8 @@ def image_to_cv2(msg: "Image", output_size: Tuple[int, int]) -> np.ndarray:
     frame = np.frombuffer(msg.data, dtype=np.uint8).reshape((int(msg.height), int(msg.width), 3))
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-    side = min(frame.shape[0], frame.shape[1])
-    offset_y = (frame.shape[0] - side) // 2
-    offset_x = (frame.shape[1] - side) // 2
-    square_image = frame[offset_y : offset_y + side, offset_x : offset_x + side]
-
     target_w, target_h = int(output_size[0]), int(output_size[1])
-    return cv2.resize(square_image, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    return cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
 
 
 def build_omnivla_edge_inputs(

@@ -54,31 +54,31 @@ def generate_launch_description() -> LaunchDescription:
                 ],
             ),
             # pfoe: CLIP encoder (Python)
-            Node(
-                package="pfoe",
-                executable="clip_encoder_node.py",
-                name="clip_encoder",
-                output="screen",
-                parameters=[pfoe_config],
-            ),
-            # pfoe: particle filter + /prompt publisher (C++)
-            Node(
-                package="pfoe",
-                executable="pfoe_node",
-                name="pfoe",
-                output="screen",
-                parameters=[
-                    pfoe_config,
-                    {"episode_data_dir": LaunchConfiguration("episode_data_dir")},
-                ],
-            ),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    str(package_share / "launch" / "pfoe_debug.launch.py")
-                ),
-                launch_arguments={
-                    "episode_data_dir": LaunchConfiguration("episode_data_dir")
-                }.items(),
-            ),
+            # Node(
+            #     package="pfoe",
+            #     executable="clip_encoder_node.py",
+            #     name="clip_encoder",
+            #     output="screen",
+            #     parameters=[pfoe_config],
+            # ),
+            # # pfoe: particle filter + /prompt publisher (C++)
+            # Node(
+            #     package="pfoe",
+            #     executable="pfoe_node",
+            #     name="pfoe",
+            #     output="screen",
+            #     parameters=[
+            #         pfoe_config,
+            #         {"episode_data_dir": LaunchConfiguration("episode_data_dir")},
+            #     ],
+            # ),
+            # IncludeLaunchDescription(
+            #     PythonLaunchDescriptionSource(
+            #         str(package_share / "launch" / "pfoe_debug.launch.py")
+            #     ),
+            #     launch_arguments={
+            #         "episode_data_dir": LaunchConfiguration("episode_data_dir")
+            #     }.items(),
+            # ),
         ]
     )

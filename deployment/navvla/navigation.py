@@ -141,7 +141,7 @@ class OmniVLANavigationNode(Node):
         else:
             goal_pose = [0.0, 0.0, 1.0, 0.0]
 
-        self.latest_prompt = "Stop at the white line"
+        self.latest_prompt = "No language instruction"
         self.update_text_feature()
 
         self.satellite_current = PILImage.new("RGB", (352, 352), color=(0, 0, 0))
