@@ -23,3 +23,5 @@ __pycache__
 CLAUDE.md
 
 #例外ファイルを指定
+# 実機の重み(SSD から置く)
+deployment/weights/*.pt

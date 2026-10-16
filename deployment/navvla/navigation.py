@@ -8,6 +8,7 @@ from typing import Tuple
 from ament_index_python.packages import get_package_share_directory
 
 import clip
+import cv2
 import numpy as np
 import torch
 from PIL import Image as PILImage
@@ -17,6 +18,7 @@ from OmniVLA.inference.utils_policy import (
     transform_images_PIL_mask,
 )
 from .preprocess import build_mask, build_omnivla_edge_inputs, image_to_cv2, load_yaml
+from .toponav import TopologicalNavigator
 from .visualize import render_debug_image, to_image_msg
 
 import rclpy
@@ -24,7 +26,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Path as NavPath
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Empty, String
 
 
 class OmniVLANavigationNode(Node):
@@ -38,7 +40,12 @@ class OmniVLANavigationNode(Node):
 
         self.autonomous_flag = False
         self.context_queue = []
+        self.frame_history = []
         self.obs_image = None
+        self.obs_image_bgr = None
+        # 横断歩道: 停止の指示が出ている間に /cross を受けたら、指示なし(=進む)に置き換える
+        self.cross_override = False
+        self.non_stop_since = None
         self.package_share_dir = package_share_dir
 
         self.nav_cfg = load_yaml(nav_config_path)
@@ -47,13 +54,17 @@ class OmniVLANavigationNode(Node):
         self.init_params()
         self.init_model()
         self.init_model_modality()
+        self.init_toponav()
 
         self.image_sub = self.create_subscription(Image, "/image_raw", self.image_callback, 10)
         self.autonomous_sub = self.create_subscription(Bool, "/autonomous", self.autonomous_callback, 10)
         self.prompt_sub = self.create_subscription(String, "/prompt", self.prompt_callback, 10)
+        self.cross_sub = self.create_subscription(Empty, "/cross", self.cross_callback, 10)
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.path_pub = self.create_publisher(NavPath, "/path", 10)
         self.debug_image_pub = self.create_publisher(Image, "/debug_image", 10)
+        # トポマップで決めた指示を音声案内(voice_node)にも流す
+        self.prompt_pub = self.create_publisher(String, "/prompt", 10)
 
         self.timer = self.create_timer(self.interval_ms / 1000.0, self.timer_callback)
 
@@ -66,6 +77,13 @@ class OmniVLANavigationNode(Node):
         self.path_frame_id = self.nav_cfg.get("path_frame_id", "base_link")
         self.modality_id = self.nav_cfg.get("modality_id", 3)
         self.interval_ms = self.nav_cfg.get("interval_ms", 100)
+        # 学習の waypoint_spacing と同じ値。過去画像も予測点も interval_ms の何周期おきかを表す
+        self.context_spacing = int(self.nav_cfg.get("context_spacing", 1))
+        self.stop_prompt = str(self.nav_cfg.get("stop_prompt", "Stop at the edge of the road"))
+        # 停止以外の指示がこの秒数続いたら横断の上書きを解除する(位置推定の揺れで渡っている途中に止まらないように)
+        self.cross_release_sec = float(self.nav_cfg.get("cross_release_sec", 3.0))
+        # 予測点(waypoint_select)までの距離[m]がこれ未満なら止める。0 で無効
+        self.stop_distance = float(self.nav_cfg.get("stop_distance", 0.0))
 
         modality_to_flags = {
             0: (False, False, False),  # satellite only
@@ -155,27 +173,97 @@ class OmniVLANavigationNode(Node):
         self.autonomous_flag = bool(msg.data)
         self.get_logger().info(f"Autonomous mode: {self.autonomous_flag}")
 
+    def init_toponav(self) -> None:
+        # トポマップ(PlaceNet 特徴)上のベイズフィルタで現在ノードを推定し、そのノードの指示を言語指示にする
+        self.toponav = None
+        self.toponav_index = None
+        if not bool(self.nav_cfg.get("use_toponav", False)):
+            return
+        share = self.package_share_dir
+        self.toponav = TopologicalNavigator(
+            topomap_path=share / str(self.nav_cfg["topomap_path"]),
+            image_dir=share / str(self.nav_cfg["topomap_image_dir"]),
+            weight_path=share / str(self.nav_cfg["placenet_weight_path"]),
+            device=self.device,
+            image_size=self.goal_size,
+            crop_size=int(self.nav_cfg.get("toponav_crop_size", 0)),
+            delta=float(self.nav_cfg.get("toponav_delta", 5.0)),
+            window_lower=int(self.nav_cfg.get("toponav_window_lower", 0)),
+            window_upper=int(self.nav_cfg.get("toponav_window_upper", 2)),
+            window_radius=int(self.nav_cfg.get("toponav_window_radius", 2)),
+        )
+        self.toponav_min_score = float(self.nav_cfg.get("toponav_min_score", 0.4))
+        self.get_logger().info(f"Toponav loaded: nodes={len(self.toponav.nodes)}")
+
+    def update_toponav(self) -> None:
+        index, score = self.toponav.estimate_current_node(self.obs_image_bgr)
+        if score < self.toponav_min_score:
+            return  # 推定が定まるまでは指示を変えない
+        if index != self.toponav_index:
+            self.toponav_index = index
+            self.get_logger().info(f"Toponav node={index} score={score:.2f}", throttle_duration_sec=2.0)
+        prompt = self.toponav.nodes[index].prompt
+        if prompt != self.latest_prompt:
+            self.prompt_pub.publish(String(data=prompt))
+        self.set_prompt(prompt)
+
     def prompt_callback(self, msg: String) -> None:
-        self.latest_prompt = str(msg.data)
+        if self.toponav is not None:
+            return  # 指示はトポマップから決める(自分が流した /prompt も届くので無視する)
+        self.set_prompt(str(msg.data))
+
+    def set_prompt(self, prompt: str) -> None:
+        changed = prompt != self.latest_prompt
+        self.latest_prompt = prompt
+        if self.cross_override:
+            now = self.get_clock().now().nanoseconds * 1e-9
+            if self.latest_prompt == self.stop_prompt:
+                self.non_stop_since = None
+            elif self.non_stop_since is None:
+                self.non_stop_since = now
+            elif now - self.non_stop_since >= self.cross_release_sec:
+                self.cross_override = False
+                self.non_stop_since = None
+                self.get_logger().info("Cross override released")
+        if self.use_prompt and changed:
+            self.update_text_feature()
+
+    def cross_callback(self, msg: Empty) -> None:
+        self.cross_override = True
+        self.non_stop_since = None
+        self.get_logger().info("Cross override: stop instruction is replaced with no instruction")
         if self.use_prompt:
             self.update_text_feature()
 
+    def effective_prompt(self) -> str:
+        if self.cross_override and self.latest_prompt == self.stop_prompt:
+            return "No language instruction"
+        return self.latest_prompt
+
     def image_callback(self, msg: Image) -> None:
+        rgb = np.frombuffer(msg.data, dtype=np.uint8).reshape((int(msg.height), int(msg.width), 3))
+        self.obs_image_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         cv_image = image_to_cv2(msg, self.clip_size)
         self.obs_image = PILImage.fromarray(cv_image[:, :, ::-1])
-        debug_img = render_debug_image(cv_image, self.latest_prompt)
+        debug_img = render_debug_image(cv_image, self.effective_prompt())
         self.debug_image_pub.publish(to_image_msg(debug_img, msg.header.stamp))
 
 
     def timer_callback(self) -> None:
+        # 位置推定は自律走行していない間も回す(スタート地点まで手で動かす間に推定を収束させる)
+        if self.toponav is not None and self.obs_image_bgr is not None:
+            self.update_toponav()
         if not self.autonomous_flag or self.obs_image is None:
             return
 
-        self.context_queue.append(self.obs_image.resize(self.obs_size))
-        if len(self.context_queue) > self.context_size + 1:
-            self.context_queue.pop(0)
-        if len(self.context_queue) < self.context_size + 1:
+        # 学習と同じく context_spacing 周期おきの過去画像を使う(5Hz・spacing 3 なら 0.6 秒おき)
+        history_len = self.context_size * self.context_spacing + 1
+        self.frame_history.append(self.obs_image.resize(self.obs_size))
+        if len(self.frame_history) > history_len:
+            self.frame_history.pop(0)
+        if len(self.frame_history) < history_len:
             return
+        self.context_queue = self.frame_history[:: self.context_spacing]
 
         obs_images, map_images, cur_large_img = build_omnivla_edge_inputs(
             context_queue=self.context_queue,
@@ -240,8 +328,12 @@ class OmniVLANavigationNode(Node):
         dx *= self.waypoint_spacing
         dy *= self.waypoint_spacing
 
+        if math.hypot(dx, dy) < self.stop_distance:
+            return waypoints, 0.0, 0.0
+
         eps = 0.1
-        dt = 1.0 / 5.0
+        # 予測点の間隔は context_spacing 周期。spacing 1 のときの 0.2 秒と同じ関係を保つ
+        dt = (self.interval_ms / 1000.0) * self.context_spacing
 
         if abs(dx) < eps and abs(dy) < eps:
             linear_vel = 0.0
@@ -282,7 +374,7 @@ class OmniVLANavigationNode(Node):
         return waypoints, float(linear_vel_limit), float(angular_vel_limit)
 
     def update_text_feature(self) -> None:
-        prompt = self.latest_prompt if self.use_prompt else "No language instruction"
+        prompt = self.effective_prompt() if self.use_prompt else "No language instruction"
         token = clip.tokenize(prompt, truncate=True).to(self.device)
         with torch.no_grad():
             self.feat_text = self.text_encoder.encode_text(token)

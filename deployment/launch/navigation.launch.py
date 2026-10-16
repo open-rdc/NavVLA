@@ -7,6 +7,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -33,6 +34,12 @@ def generate_launch_description() -> LaunchDescription:
                 "preprocess_config",
                 default_value=preprocess_config_default,
                 description="Path to preprocessing config",
+            ),
+            # 位置推定は navigation 内のトポマップ(nav.yaml の use_toponav)で行うので、pfoe は既定で起動しない
+            DeclareLaunchArgument(
+                "use_pfoe",
+                default_value="false",
+                description="Launch pfoe (CLIP particle filter) to publish /prompt",
             ),
             DeclareLaunchArgument(
                 "episode_data_dir",
@@ -69,6 +76,7 @@ def generate_launch_description() -> LaunchDescription:
                 name="clip_encoder",
                 output="screen",
                 parameters=[pfoe_config],
+                condition=IfCondition(LaunchConfiguration("use_pfoe")),
             ),
             # pfoe: particle filter + /prompt publisher (C++)
             Node(
@@ -80,6 +88,7 @@ def generate_launch_description() -> LaunchDescription:
                     pfoe_config,
                     {"episode_data_dir": LaunchConfiguration("episode_data_dir")},
                 ],
+                condition=IfCondition(LaunchConfiguration("use_pfoe")),
             ),
         ]
     )

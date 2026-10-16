@@ -1,9 +1,12 @@
-weights_path: deployment/weights/omnivla-edge_tsudanuma8.pth
+# 魚眼 fisheye_v1 (津田沼+つくば, 30 epoch) の検証ロス最良 = epoch 20。SSD から deployment/weights/ に置く
+weights_path: deployment/weights/omnivla-edge_fisheye_v1_best.pth
 model_type: omnivla-edge
 context_size: 5
 len_traj_pred: 8
 
 interval_ms: 200
+# 学習の waypoint_spacing と同じ値(fisheye_v1 は 3)。過去画像・予測点とも 0.6 秒おき
+context_spacing: 3
 linear_max_vel: 0.5
 angular_max_vel: 0.5
 close_threshold: 1.0
@@ -22,7 +25,28 @@ modality_id: 7
 
 # Optional inference settings
 waypoint_select: 4
-metric_waypoint_spacing: 0.17
+# 学習の正規化は metric_waypoint_spacing(0.17) x waypoint_spacing(3) = 0.51 (training/data/dataset.py)
+metric_waypoint_spacing: 0.51
 goal_pose: [10.0, -1.0, 0.0, -1.0]
 goal_image_path: OmniVLA/inference/goal_img.jpg
 path_frame_id: base_link
+
+# 横断歩道: この指示で止まっている時に /cross (std_msgs/Empty) を受けたら指示なし(=進む)に置き換える
+stop_prompt: Stop at the edge of the road
+cross_release_sec: 3.0
+# 予測点(waypoint_select=4, 3秒先)までの距離[m]がこれ未満なら止める。0 で無効。
+# 検証走行で 0.6m: 通常区間の誤停止 0%、横断歩道の停止区間で 86% 停止(残りは止まる前の減速部分)
+stop_distance: 0.6
+
+# 位置推定: feat/toponav のベイズフィルタ(PlaceNet 特徴)。推定したノードの prompt を言語指示にする(pfoe は使わない)
+# トポマップは deployment/scripts/create_topomap.py で full1 から作る(--saved-step 10 --crop-size 0)。SSD から data/ に置く
+use_toponav: true
+topomap_path: data/tsukuba_toponav/topomap.yaml
+topomap_image_dir: data/tsukuba_toponav/images
+placenet_weight_path: deployment/weights/placenet.pt
+toponav_crop_size: 0        # 魚眼は切り出さない(トポマップ作成時と揃える)
+# 遷移窓 [lower, upper): 1周期(0.2秒)で「その場 or 1ノード前進」。[-1,1) だと full2 で追従しなかった(2026-10-16)
+toponav_window_lower: 0
+toponav_window_upper: 2
+toponav_window_radius: 2
+toponav_min_score: 0.4      # ピーク±2ノードの確率の和がこれ未満なら指示を変えない
