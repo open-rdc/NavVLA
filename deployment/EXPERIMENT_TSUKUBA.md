@@ -48,10 +48,13 @@ ros2 topic pub --once /autonomous std_msgs/msg/Bool "{data: true}"   # 自律開
 止まったら、安全を確認して
 
 ```bash
-ros2 topic pub --once /cross std_msgs/msg/Empty "{}"
+ros2 topic pub -w 1 -t 5 -r 5 /cross std_msgs/msg/Empty "{}"
 ```
 
-停止の指示を「指示なし(=進む)」に置き換える。停止以外の指示が 3 秒続いたら置き換えを解除する
+(`--once` だと届かないことがあったので 5 回送る。何回届いても同じ)
+
+停止の指示を「指示なし(=進む)」に置き換える。自律走行で止まっている間は位置推定を進めないので、
+待っている間に停止ノードを抜けて勝手に走り出すことはない(=渡るのは `/cross` を送った時だけ)。停止以外の指示が 3 秒続いたら置き換えを解除する
 (`nav.yaml` の `cross_release_sec`)。`/debug_image` には実際にモデルへ渡している指示が出る。
 
 ## 5. この実験用の設定 (nav.yaml)

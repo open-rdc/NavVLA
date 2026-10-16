@@ -43,6 +43,7 @@ class OmniVLANavigationNode(Node):
         self.frame_history = []
         self.obs_image = None
         self.obs_image_bgr = None
+        self.last_linear_vel = None
         # 横断歩道: 停止の指示が出ている間に /cross を受けたら、指示なし(=進む)に置き換える
         self.cross_override = False
         self.non_stop_since = None
@@ -250,8 +251,10 @@ class OmniVLANavigationNode(Node):
 
 
     def timer_callback(self) -> None:
-        # 位置推定は自律走行していない間も回す(スタート地点まで手で動かす間に推定を収束させる)
-        if self.toponav is not None and self.obs_image_bgr is not None:
+        # 位置推定は自律走行していない間も回す(スタート地点まで手で動かす間に推定を収束させる)。
+        # 自律走行で止めている間は進めない(遷移モデルで信念が前に流れ、停止ノードを抜けて勝手に走り出さないように)
+        stopped = self.autonomous_flag and self.last_linear_vel == 0.0
+        if self.toponav is not None and self.obs_image_bgr is not None and not stopped:
             self.update_toponav()
         if not self.autonomous_flag or self.obs_image is None:
             return
@@ -315,6 +318,7 @@ class OmniVLANavigationNode(Node):
         self.path_pub.publish(msg)
 
     def publisher_command_velocity(self, linear_vel: float, angular_vel: float) -> None:
+        self.last_linear_vel = float(linear_vel)
         twist = Twist()
         twist.linear.x = float(linear_vel)
         twist.angular.z = float(angular_vel)
