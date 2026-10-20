@@ -1,0 +1,23 @@
+# 魚眼(津田沼のみ, 見直し済みの注釈)での OmniVLA-edge 学習。設定は holdout_v2 と揃える。
+weights_path: training/weights/omnivla-edge.pth
+pretrained: true
+run_root_dir: training/runs/fisheye_tsudanuma_v2_omnivla
+resume: true            # run_root_dir/checkpoint_last.pth があれば続きから
+
+epochs: 30              # SmolVLA と同じエポック数
+batch_size: 16
+learning_rate: 1.0e-4
+weight_decay: 0.01
+num_workers: 8
+seed: 42
+train_split_ratio: 1.0  # 分割ファイルを先に置いてあるので使われない
+
+max_grad_norm: null
+lr_scheduler_type: cosine
+warmup_epochs: 2
+
+eval_freq: 1            # 毎エポック、検証用(各 data_folder の test)で loss を測る
+eval_train_datasets: false  # 学習データ全体の評価は重いので行わない
+max_train_steps: null
+max_test_steps: null
+save_every_epoch: true  # 毎エポックの重みを model_epoch_XXX.pth として残す

@@ -1,0 +1,17 @@
+# 魚眼カメラ(640x480 を切り出さずに縮小)の津田沼チャレンジコース+キャンパスのランダム走行だけ(つくばは入れない)。
+# 注釈は 2026-10-20 に全 16 周の見直しが終わったもの。画像は fisheye_tsudanuma_v1 とハードリンクで共有し、traj_prompt.txt だけ差し替えた。
+# 学習設定は fisheye_v1(= 旧カメラの holdout_v2)と揃える。検証用(test)は tsudanuma_20261010_134655。
+image_size: [96, 96]
+context_type: temporal
+normalize: true
+clip_model: ViT-B/32
+pad_episode_edges: true
+
+datasets:
+  fisheye_tsudanuma_v2:
+    data_folder: /home/share/V23C1036/navvla_data/fisheye_tsudanuma_v2
+    end_slack: 3
+    goals_per_obs: 1
+    waypoint_spacing: 3          # 8点 x 3ステップ = 4.8秒先
+    metric_waypoint_spacing: 0.17
+    modality_id: 7               # language only
