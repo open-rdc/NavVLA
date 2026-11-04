@@ -47,6 +47,10 @@ class OmniVLANavigationNode(Node):
         # 横断歩道: 停止の指示が出ている間に /cross を受けたら、指示なし(=進む)に置き換える
         self.cross_override = False
         self.non_stop_since = None
+        # 横断歩道: 自律走行中に停止の指示が一度出たら /cross まで停止の指示を保持する
+        # (停止ノードは見た目がほぼ同じで、止まりきる前に位置推定が区間を抜けると走り抜けてしまうため)
+        self.stop_latched = False
+        self.encoded_prompt = None
         self.package_share_dir = package_share_dir
 
         self.nav_cfg = load_yaml(nav_config_path)
@@ -173,6 +177,11 @@ class OmniVLANavigationNode(Node):
     def autonomous_callback(self, msg: Bool) -> None:
         self.autonomous_flag = bool(msg.data)
         self.get_logger().info(f"Autonomous mode: {self.autonomous_flag}")
+        if not self.autonomous_flag and self.stop_latched:
+            self.stop_latched = False  # 手動に切り替えたら保持をやめる(人が動かすので)
+            self.get_logger().info("Stop latch cleared (manual mode)")
+            if self.use_prompt:
+                self.update_text_feature()
 
     def init_toponav(self) -> None:
         # トポマップ(PlaceNet 特徴)上のベイズフィルタで現在ノードを推定し、そのノードの指示を言語指示にする
@@ -214,8 +223,15 @@ class OmniVLANavigationNode(Node):
         self.set_prompt(str(msg.data))
 
     def set_prompt(self, prompt: str) -> None:
-        changed = prompt != self.latest_prompt
         self.latest_prompt = prompt
+        if (
+            prompt == self.stop_prompt
+            and self.autonomous_flag
+            and not self.cross_override
+            and not self.stop_latched
+        ):
+            self.stop_latched = True
+            self.get_logger().info("Stop latched: hold stop instruction until /cross")
         if self.cross_override:
             now = self.get_clock().now().nanoseconds * 1e-9
             if self.latest_prompt == self.stop_prompt:
@@ -226,11 +242,12 @@ class OmniVLANavigationNode(Node):
                 self.cross_override = False
                 self.non_stop_since = None
                 self.get_logger().info("Cross override released")
-        if self.use_prompt and changed:
+        if self.use_prompt:
             self.update_text_feature()
 
     def cross_callback(self, msg: Empty) -> None:
         self.cross_override = True
+        self.stop_latched = False
         self.non_stop_since = None
         self.get_logger().info("Cross override: stop instruction is replaced with no instruction")
         if self.use_prompt:
@@ -239,6 +256,8 @@ class OmniVLANavigationNode(Node):
     def effective_prompt(self) -> str:
         if self.cross_override and self.latest_prompt == self.stop_prompt:
             return "No language instruction"
+        if self.stop_latched:
+            return self.stop_prompt
         return self.latest_prompt
 
     def image_callback(self, msg: Image) -> None:
@@ -379,6 +398,9 @@ class OmniVLANavigationNode(Node):
 
     def update_text_feature(self) -> None:
         prompt = self.effective_prompt() if self.use_prompt else "No language instruction"
+        if prompt == self.encoded_prompt:
+            return  # 指示が変わっていなければエンコードし直さない
+        self.encoded_prompt = prompt
         token = clip.tokenize(prompt, truncate=True).to(self.device)
         with torch.no_grad():
             self.feat_text = self.text_encoder.encode_text(token)
