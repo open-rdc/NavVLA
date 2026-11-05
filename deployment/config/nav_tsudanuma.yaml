@@ -1,0 +1,59 @@
+# 津田沼用(2026-11-04 の nav.yaml を 11-05 に残したもの)。使うときは nav_config:=<このファイル> で渡す
+# 魚眼 fisheye_tsudanuma_v2 の epoch 22 (model_epoch_022.pth)。SSD の h100_weights_backup_20261022 から deployment/weights/ に置く
+weights_path: deployment/weights/omnivla-edge_fisheye_tsudanuma_v2_e22.pth
+model_type: omnivla-edge
+context_size: 5
+len_traj_pred: 8
+
+interval_ms: 200
+# 学習の waypoint_spacing と同じ値(fisheye_v1 は 3)。過去画像・予測点とも 0.6 秒おき
+context_spacing: 3
+# 学習の走行(津田沼 123146)の /cmd_vel は走行中の中央値 1.0 m/s。上限もそれに合わせる(navigation.py の clip も 1.0)
+linear_max_vel: 1.0
+angular_max_vel: 0.5
+close_threshold: 1.0
+
+modality_id: 7
+# modality flags (pose/image/language) are derived automatically from modality_id
+# 0: satellite only
+# 1: pose and satellite
+# 2: satellite and image
+# 3: all
+# 4: pose only
+# 5: pose and image
+# 6: image only
+# 7: language only
+# 8: language and pose
+
+# Optional inference settings
+waypoint_select: 0
+# 学習の正規化は metric_waypoint_spacing(0.17) x waypoint_spacing(3) = 0.51 (training/data/dataset.py)
+metric_waypoint_spacing: 0.51
+goal_pose: [10.0, -1.0, 0.0, -1.0]
+goal_image_path: OmniVLA/inference/goal_img.jpg
+path_frame_id: base_link
+
+# 横断歩道: この指示で止まっている時に /cross (std_msgs/Empty) を受けたら指示なし(=進む)に置き換える
+stop_prompt: Stop at the edge of the road
+cross_release_sec: 3.0
+# 予測点(waypoint_select=0, 0.6秒先)までの距離[m]がこれ未満なら止める。0 で無効。3秒先(select=4)で決めた 0.6 を 0.6/3 倍した値
+# 検証走行で 0.6m: 通常区間の誤停止 0%、横断歩道の停止区間で 86% 停止(残りは止まる前の減速部分)
+# 津田沼には止まる場面がないので無効(誤停止を防ぐ)。横断歩道のあるコースで使うときは select=0 なら 0.12
+stop_distance: 0.0
+# 予測した経路の全点が今の位置からこの距離[m]以内なら止める。0 で無効。0.3 = 4.8 秒で 0.3 m(平均 0.06 m/s)以下のじわじわ進む経路を採用しない
+# つくばのオフライン評価(2026-11-05)では止まる場面の予測が 4.8 秒で 0.1〜0.3 m 進んでいた。津田沼の設定のままなので 0(無効)
+stop_path_m: 0.0
+
+# 位置推定: feat/toponav のベイズフィルタ(PlaceNet 特徴)。推定したノードの prompt を言語指示にする(pfoe は使わない)
+# トポマップは deployment/scripts/create_topomap.py で tsudanuma_20261013_123146 から作る(--saved-step 10 --crop-size 0)。SSD の weights/navvla/topomap から data/ に置く
+# ※この周回は学習に使った周回。卒論 6.2 節(学習データとは別の 1 周から作成)と合わないので、本番前に作り直すか記述を直す
+use_toponav: true
+topomap_path: data/tsudanuma_toponav/topomap.yaml
+topomap_image_dir: data/tsudanuma_toponav/images
+placenet_weight_path: deployment/weights/placenet.pt
+toponav_crop_size: 0        # 魚眼は切り出さない(トポマップ作成時と揃える)
+# 遷移窓 [lower, upper): 1周期(0.2秒)で「その場 or 1ノード前進」。[-1,1) だと full2 で追従しなかった(2026-10-16)
+toponav_window_lower: 0
+toponav_window_upper: 2
+toponav_window_radius: 2
+toponav_min_score: 0.4      # ピーク±2ノードの確率の和がこれ未満なら指示を変えない
