@@ -60,3 +60,6 @@ toponav_window_lower: 0
 toponav_window_upper: 2
 toponav_window_radius: 2
 toponav_min_score: 0.4      # ピーク±2ノードの確率の和がこれ未満なら指示を変えない
+# 観測の尤度の鋭さ(既定 5)。つくばの 1 周の地図で，地図に使っていない周回を流して決めた(2026-11-05，vla-nav-experiments の tune_toponav.py)。
+# 道順が地図と同じ 5 周回で 5→12: 3 ノード以内 67→78%，地図の止まれの所で止まったとき止まれが出る 32→36/38。窓 [0,3)・[-1,2) は悪い，min_score はほぼ効かない
+toponav_delta: 12.0
