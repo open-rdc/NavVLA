@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import math
 import re
+import sys
 from pathlib import Path
 from typing import Tuple
 from ament_index_python.packages import get_package_share_directory
@@ -26,6 +28,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Path as NavPath
 from rclpy.node import Node
+from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Empty, String
 
@@ -514,8 +517,25 @@ class OmniVLANavigationNode(Node):
 
 def main() -> int:
     package_share_dir = Path(get_package_share_directory("navvla"))
-    nav_config_path = package_share_dir / "config" / "nav.yaml"
-    preprocess_config_path = package_share_dir / "config" / "preprocess.yaml"
+    config_dir = package_share_dir / "config"
+
+    # launch の nav_config / preprocess_config を受け取る。ファイル名だけなら share/navvla/config から探す
+    # (nav_config:=nav_tsudanuma.yaml で津田沼の設定にする)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--nav-config", default=str(config_dir / "nav.yaml"))
+    parser.add_argument("--preprocess-config", default=str(config_dir / "preprocess.yaml"))
+    args = parser.parse_args(remove_ros_args(sys.argv)[1:])
+
+    def resolve(path: str) -> Path:
+        p = Path(path).expanduser()
+        if not p.is_absolute() and not p.exists() and (config_dir / p).exists():
+            p = config_dir / p
+        if not p.exists():
+            raise FileNotFoundError(f"config not found: {path}")
+        return p
+
+    nav_config_path = resolve(args.nav_config)
+    preprocess_config_path = resolve(args.preprocess_config)
 
     rclpy.init()
     node = OmniVLANavigationNode(nav_config_path, preprocess_config_path, package_share_dir)
