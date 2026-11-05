@@ -62,6 +62,7 @@ class OmniVLANavigationNode(Node):
         self.cross_until = None
         self.crossed_end = -1      # /cross で渡った止まれの区間の最後のノード。推定が戻ってもその区間では保持し直さない
         self.crossed_next = None   # その区間の次の指示(推定が戻ったときもこちらを出す)
+        self.cross_started = None  # /cross を受けた時刻[s]
         self.non_stop_since = None
         self.encoded_prompt = None
         self.package_share_dir = package_share_dir
@@ -97,6 +98,9 @@ class OmniVLANavigationNode(Node):
         self.interval_ms = self.nav_cfg.get("interval_ms", 100)
         # 学習の waypoint_spacing と同じ値。過去画像も予測点も interval_ms の何周期おきかを表す
         self.context_spacing = int(self.nav_cfg.get("context_spacing", 1))
+        # /cross から渡る指示を出すのはこの秒数まで。推定が止まれの区間を超えないままだと次の止まれを保持できず
+        # 走り抜けるので、超えたら地図の指示に戻す(まだ止まれの区間なら止まり直す)。2026-11-05 本人と 20 秒に
+        self.cross_max_sec = float(self.nav_cfg.get("cross_max_sec", 20.0))
         # 停止以外の指示がこの秒数続いたら横断の上書きを解除する(トポマップを使わないとき)
         self.cross_release_sec = float(self.nav_cfg.get("cross_release_sec", 3.0))
         # 予測点(waypoint_select)までの距離[m]がこれ未満なら止める。0 で無効
@@ -287,6 +291,7 @@ class OmniVLANavigationNode(Node):
         self.cross_override = True
         self.cross_prompt = self.latched_next or "No language instruction"
         self.cross_until = self.latched_end
+        self.cross_started = self.get_clock().now().nanoseconds * 1e-9
         if self.latched_end is not None:
             self.crossed_end = self.latched_end
             self.crossed_next = self.cross_prompt
@@ -295,6 +300,18 @@ class OmniVLANavigationNode(Node):
         self.get_logger().info(f"Cross: '{self.latched_prompt}' -> '{self.cross_prompt}'")
         if self.use_prompt:
             self.update_text_feature()
+
+    def check_cross_timeout(self) -> None:
+        """/cross から cross_max_sec 経っても渡る指示のままなら地図の指示に戻す(止まれの区間ならもう一度保持する)"""
+        if not self.cross_override or self.cross_started is None:
+            return
+        if self.get_clock().now().nanoseconds * 1e-9 - self.cross_started < self.cross_max_sec:
+            return
+        self.cross_override = False
+        self.crossed_end = -1  # 渡り切れていないとみなし、止まれの区間にいれば保持し直す
+        self.crossed_next = None
+        self.get_logger().info(f"Cross timed out ({self.cross_max_sec:.0f}s): back to the map instruction")
+        self.set_prompt(self.latest_prompt)
 
     def effective_prompt(self) -> str:
         if self.cross_override:
@@ -323,6 +340,7 @@ class OmniVLANavigationNode(Node):
         # 位置推定は自律走行していない間も回す(スタート地点まで手で動かす間に推定を収束させる)。
         # 自律走行で止めている間は進めない(遷移モデルで信念が前に流れ、停止ノードを抜けて勝手に走り出さないように)
         stopped = self.autonomous_flag and self.last_linear_vel == 0.0
+        self.check_cross_timeout()  # 止まっていて位置推定を進めない間も時間は見る
         if self.toponav is not None and self.obs_image_bgr is not None and not stopped:
             self.update_toponav()
         if not self.autonomous_flag or self.obs_image is None:
