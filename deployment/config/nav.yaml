@@ -39,6 +39,9 @@ cross_release_sec: 3.0
 # 検証走行で 0.6m: 通常区間の誤停止 0%、横断歩道の停止区間で 86% 停止(残りは止まる前の減速部分)
 # 津田沼には止まる場面がないので無効(誤停止を防ぐ)。横断歩道のあるコースで使うときは select=0 なら 0.12
 stop_distance: 0.0
+# 予測した経路の全点が今の位置からこの距離[m]以内なら止める。0 で無効。0.3 = 4.8 秒で 0.3 m(平均 0.06 m/s)以下のじわじわ進む経路を採用しない
+# つくばのオフライン評価(2026-11-05)では止まる場面の予測が 4.8 秒で 0.1〜0.3 m 進んでいた。津田沼の設定のままなので 0(無効)
+stop_path_m: 0.0
 
 # 位置推定: feat/toponav のベイズフィルタ(PlaceNet 特徴)。推定したノードの prompt を言語指示にする(pfoe は使わない)
 # トポマップは deployment/scripts/create_topomap.py で tsudanuma_20261013_123146 から作る(--saved-step 10 --crop-size 0)。SSD の weights/navvla/topomap から data/ に置く

@@ -89,6 +89,9 @@ class OmniVLANavigationNode(Node):
         self.cross_release_sec = float(self.nav_cfg.get("cross_release_sec", 3.0))
         # 予測点(waypoint_select)までの距離[m]がこれ未満なら止める。0 で無効
         self.stop_distance = float(self.nav_cfg.get("stop_distance", 0.0))
+        # 予測した経路(全点)が今の位置からこの距離[m]以内なら止める。0 で無効。
+        # 4.8 秒(8 点 x 0.6 秒)で 0.3 m = 平均 0.06 m/s 以下のじわじわ進む経路を採用しない(学習の zero_stop_m と同じ考え方)
+        self.stop_path_m = float(self.nav_cfg.get("stop_path_m", 0.0))
 
         modality_to_flags = {
             0: (False, False, False),  # satellite only
@@ -352,6 +355,8 @@ class OmniVLANavigationNode(Node):
         dy *= self.waypoint_spacing
 
         if math.hypot(dx, dy) < self.stop_distance:
+            return waypoints, 0.0, 0.0
+        if self.stop_path_m > 0 and float(np.hypot(waypoints[:, 0], waypoints[:, 1]).max()) * self.waypoint_spacing <= self.stop_path_m:
             return waypoints, 0.0, 0.0
 
         eps = 0.1
