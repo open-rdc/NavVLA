@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Tuple
 from ament_index_python.packages import get_package_share_directory
@@ -29,6 +30,9 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Empty, String
 
 
+STOP_RE = re.compile(r"\bstop\b", re.I)  # 止まれの指示("Stop at the white line" など言い回しは自由)
+
+
 class OmniVLANavigationNode(Node):
     def __init__(
         self,
@@ -44,12 +48,21 @@ class OmniVLANavigationNode(Node):
         self.obs_image = None
         self.obs_image_bgr = None
         self.last_linear_vel = None
-        # 横断歩道: 停止の指示が出ている間に /cross を受けたら、指示なし(=進む)に置き換える
-        self.cross_override = False
-        self.non_stop_since = None
-        # 横断歩道: 自律走行中に停止の指示が一度出たら /cross まで停止の指示を保持する
-        # (停止ノードは見た目がほぼ同じで、止まりきる前に位置推定が区間を抜けると走り抜けてしまうため)
+        # 止まれ: 自律走行中に止まれの指示("stop" を含む指示)が一度出たら /cross までその指示を保持する
+        # (停止ノードは見た目がほぼ同じで、止まりきる前に位置推定が区間を抜けると走り抜けてしまうため)。
+        # 保持するのは指示の文だけで、動くかどうかはモデルが決める(白線で前のロボットに続いて詰める)
         self.stop_latched = False
+        self.latched_prompt = None
+        self.latched_end = None    # 保持した止まれの区間の最後のノード(トポマップ)
+        self.latched_next = None   # その区間の次の指示
+        # /cross: 保持した止まれの区間の次の指示(横断歩道を渡る指示など)に切り替える。
+        # 位置推定が止まれの区間を抜けたら(トポマップが無いときは止まれ以外が cross_release_sec 続いたら)地図の指示に戻す
+        self.cross_override = False
+        self.cross_prompt = None
+        self.cross_until = None
+        self.crossed_end = -1      # /cross で渡った止まれの区間の最後のノード。推定が戻ってもその区間では保持し直さない
+        self.crossed_next = None   # その区間の次の指示(推定が戻ったときもこちらを出す)
+        self.non_stop_since = None
         self.encoded_prompt = None
         self.package_share_dir = package_share_dir
 
@@ -84,8 +97,7 @@ class OmniVLANavigationNode(Node):
         self.interval_ms = self.nav_cfg.get("interval_ms", 100)
         # 学習の waypoint_spacing と同じ値。過去画像も予測点も interval_ms の何周期おきかを表す
         self.context_spacing = int(self.nav_cfg.get("context_spacing", 1))
-        self.stop_prompt = str(self.nav_cfg.get("stop_prompt", "Stop at the edge of the road"))
-        # 停止以外の指示がこの秒数続いたら横断の上書きを解除する(位置推定の揺れで渡っている途中に止まらないように)
+        # 停止以外の指示がこの秒数続いたら横断の上書きを解除する(トポマップを使わないとき)
         self.cross_release_sec = float(self.nav_cfg.get("cross_release_sec", 3.0))
         # 予測点(waypoint_select)までの距離[m]がこれ未満なら止める。0 で無効
         self.stop_distance = float(self.nav_cfg.get("stop_distance", 0.0))
@@ -180,9 +192,11 @@ class OmniVLANavigationNode(Node):
     def autonomous_callback(self, msg: Bool) -> None:
         self.autonomous_flag = bool(msg.data)
         self.get_logger().info(f"Autonomous mode: {self.autonomous_flag}")
-        if not self.autonomous_flag and self.stop_latched:
-            self.stop_latched = False  # 手動に切り替えたら保持をやめる(人が動かすので)
-            self.get_logger().info("Stop latch cleared (manual mode)")
+        if not self.autonomous_flag and (self.stop_latched or self.cross_override):
+            # 手動に切り替えたら保持・横断をやめる(人が動かすので)
+            self.stop_latched = False
+            self.cross_override = False
+            self.get_logger().info("Stop latch / cross cleared (manual mode)")
             if self.use_prompt:
                 self.update_text_feature()
 
@@ -225,42 +239,75 @@ class OmniVLANavigationNode(Node):
             return  # 指示はトポマップから決める(自分が流した /prompt も届くので無視する)
         self.set_prompt(str(msg.data))
 
+    @staticmethod
+    def is_stop(prompt: str) -> bool:
+        return bool(STOP_RE.search(prompt or ""))
+
+    def stop_block(self, index):
+        """index のノードから同じ指示が続く区間の最後のノードと、その次の指示。トポマップが無ければ (None, None)"""
+        if self.toponav is None or index is None:
+            return None, None
+        nodes = self.toponav.nodes
+        end = index
+        while end + 1 < len(nodes) and nodes[end + 1].prompt == nodes[index].prompt:
+            end += 1
+        return end, (nodes[end + 1].prompt if end + 1 < len(nodes) else None)
+
     def set_prompt(self, prompt: str) -> None:
         self.latest_prompt = prompt
-        if (
-            prompt == self.stop_prompt
-            and self.autonomous_flag
-            and not self.cross_override
-            and not self.stop_latched
-        ):
-            self.stop_latched = True
-            self.get_logger().info("Stop latched: hold stop instruction until /cross")
         if self.cross_override:
-            now = self.get_clock().now().nanoseconds * 1e-9
-            if self.latest_prompt == self.stop_prompt:
-                self.non_stop_since = None
-            elif self.non_stop_since is None:
-                self.non_stop_since = now
-            elif now - self.non_stop_since >= self.cross_release_sec:
-                self.cross_override = False
-                self.non_stop_since = None
-                self.get_logger().info("Cross override released")
+            if self.cross_until is not None:
+                # 位置推定が保持した止まれの区間を抜けたら地図の指示に戻す
+                if self.toponav_index is not None and self.toponav_index > self.cross_until:
+                    self.cross_override = False
+                    self.get_logger().info("Cross released: passed the stop section")
+            else:
+                now = self.get_clock().now().nanoseconds * 1e-9
+                if self.is_stop(prompt):
+                    self.non_stop_since = None
+                elif self.non_stop_since is None:
+                    self.non_stop_since = now
+                elif now - self.non_stop_since >= self.cross_release_sec:
+                    self.cross_override = False
+                    self.non_stop_since = None
+                    self.get_logger().info("Cross released")
+        passed = self.toponav_index is not None and self.toponav_index <= self.crossed_end
+        if self.is_stop(prompt) and self.autonomous_flag and not self.cross_override and not self.stop_latched and not passed:
+            self.stop_latched = True
+            self.latched_prompt = prompt
+            self.latched_end, self.latched_next = self.stop_block(self.toponav_index)
+            self.get_logger().info(f"Stop latched: '{prompt}' until /cross (next: '{self.latched_next}')")
         if self.use_prompt:
             self.update_text_feature()
 
     def cross_callback(self, msg: Empty) -> None:
+        if not self.stop_latched:
+            self.get_logger().info("/cross ignored: no stop instruction is held")
+            return
         self.cross_override = True
-        self.stop_latched = False
+        self.cross_prompt = self.latched_next or "No language instruction"
+        self.cross_until = self.latched_end
+        if self.latched_end is not None:
+            self.crossed_end = self.latched_end
+            self.crossed_next = self.cross_prompt
         self.non_stop_since = None
-        self.get_logger().info("Cross override: stop instruction is replaced with no instruction")
+        self.stop_latched = False
+        self.get_logger().info(f"Cross: '{self.latched_prompt}' -> '{self.cross_prompt}'")
         if self.use_prompt:
             self.update_text_feature()
 
     def effective_prompt(self) -> str:
-        if self.cross_override and self.latest_prompt == self.stop_prompt:
-            return "No language instruction"
+        if self.cross_override:
+            return self.cross_prompt
         if self.stop_latched:
-            return self.stop_prompt
+            return self.latched_prompt
+        if (
+            self.crossed_next is not None
+            and self.toponav_index is not None
+            and self.toponav_index <= self.crossed_end
+            and self.is_stop(self.latest_prompt)
+        ):
+            return self.crossed_next  # 渡った区間に推定が少し戻っても止まれは出さない
         return self.latest_prompt
 
     def image_callback(self, msg: Image) -> None:
