@@ -1,7 +1,9 @@
 # つくば用(2026-11-05)。津田沼の設定は nav_tsudanuma.yaml
-# 魚眼つくばだけ fisheye_tsukuba_v2_omnivla の epoch 28 (つくばの検証用で psi_mae_turn 最良 0.143)。SSD の weights/navvla/fisheye_tsukuba_v2_omnivla から deployment/weights/ に置く
-# 止まる所を完全停止にして学習し直した重み(zero_stop_m)ができたら差し替える
-weights_path: deployment/weights/omnivla-edge_fisheye_tsukuba_v2_e28.pth
+# 2026-11-06: 止まる所を完全停止(zero_stop_m 0.3)にして学習し直した fisheye_tsukuba_v2_stop_omnivla の最良(epoch 10, H100 18989)に差し替え。
+# 検証用の周回で完全停止 横断歩道 73→100%・道路端 13→97%，止まれ以外の誤停止 0/2841，ボタンで渡る指示にすると 4 か所とも動き出す。
+# psi_mae_turn は 0.143→0.150。指示なしでも横断歩道の 71% で止まる(見た目でも止まる)。白線は未評価
+# 戻すときは前の重み: deployment/weights/omnivla-edge_fisheye_tsukuba_v2_e28.pth(つくばだけ epoch 28)
+weights_path: deployment/weights/omnivla-edge_fisheye_tsukuba_v2_stop_e10.pth
 model_type: omnivla-edge
 context_size: 5
 len_traj_pred: 8
@@ -11,7 +13,7 @@ interval_ms: 200
 context_spacing: 3
 # 学習の走行の /cmd_vel は走行中の中央値 1.0 m/s(津田沼 123146。つくばも白線へ近づく所で 1 m/s 前後)。上限もそれに合わせる(navigation.py の clip も 1.0)
 linear_max_vel: 1.0
-angular_max_vel: 0.5
+angular_max_vel: 1.0  # 2026-11-06: 0.5→1.0(本人)。navigation.py の clip も ±1.0
 close_threshold: 1.0
 
 modality_id: 7
