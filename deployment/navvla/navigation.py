@@ -30,7 +30,7 @@ from nav_msgs.msg import Path as NavPath
 from rclpy.node import Node
 from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, Empty, String
+from std_msgs.msg import Bool, Empty, Float32, Int32, String
 
 
 STOP_RE = re.compile(r"\bstop\b", re.I)  # 止まれの指示("Stop at the white line" など言い回しは自由)
@@ -88,6 +88,10 @@ class OmniVLANavigationNode(Node):
         self.debug_image_pub = self.create_publisher(Image, "/debug_image", 10)
         # トポマップで決めた指示を音声案内(voice_node)にも流す
         self.prompt_pub = self.create_publisher(String, "/prompt", 10)
+        # バグ取り用(2026-11-06): 位置推定のノード番号・スコア(min_score 未満も毎回)と，実際にモデルに渡している指示(止まれの保持・ボタン後の指示を反映)
+        self.toponav_node_pub = self.create_publisher(Int32, "/toponav_node", 10)
+        self.toponav_score_pub = self.create_publisher(Float32, "/toponav_score", 10)
+        self.effective_prompt_pub = self.create_publisher(String, "/effective_prompt", 10)
 
         self.timer = self.create_timer(self.interval_ms / 1000.0, self.timer_callback)
 
@@ -233,6 +237,8 @@ class OmniVLANavigationNode(Node):
 
     def update_toponav(self) -> None:
         index, score = self.toponav.estimate_current_node(self.obs_image_bgr)
+        self.toponav_node_pub.publish(Int32(data=int(index)))
+        self.toponav_score_pub.publish(Float32(data=float(score)))
         if score < self.toponav_min_score:
             return  # 推定が定まるまでは指示を変えない
         if index != self.toponav_index:
@@ -382,6 +388,8 @@ class OmniVLANavigationNode(Node):
         self.check_cross_timeout()  # 止まっていて位置推定を進めない間も時間は見る
         if self.toponav is not None and self.obs_image_bgr is not None and not stopped:
             self.update_toponav()
+        if self.encoded_prompt is not None:
+            self.effective_prompt_pub.publish(String(data=self.encoded_prompt))
         if not self.autonomous_flag or self.obs_image is None:
             return
 
