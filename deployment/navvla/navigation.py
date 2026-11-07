@@ -101,6 +101,9 @@ class OmniVLANavigationNode(Node):
         self.waypoint_select = self.nav_cfg.get("waypoint_select", 4)
         self.linear_max_vel = self.nav_cfg.get("linear_max_vel", 0.3)
         self.angular_max_vel = self.nav_cfg.get("angular_max_vel", 0.3)
+        # 予測点への方位角から出した角速度に掛ける倍率。1.0 で従来どおり。
+        # 方位角 θ の点を弧で通るには向きが 2θ 変わる(×2)、ロボットは指令 ω の約 0.57 倍しか回らない(11/07 bag)
+        self.angular_gain = float(self.nav_cfg.get("angular_gain", 1.0))
         self.path_frame_id = self.nav_cfg.get("path_frame_id", "base_link")
         self.modality_id = self.nav_cfg.get("modality_id", 3)
         self.interval_ms = self.nav_cfg.get("interval_ms", 100)
@@ -483,7 +486,7 @@ class OmniVLANavigationNode(Node):
             angular_vel = math.copysign(math.pi / (2.0 * dt), dy)
         else:
             linear_vel = dx / dt
-            angular_vel = math.atan(dy / dx) / dt
+            angular_vel = self.angular_gain * math.atan(dy / dx) / dt
 
         linear_vel = float(np.clip(linear_vel, 0.0, 1.0))
         angular_vel = float(np.clip(angular_vel, -1.0, 1.0))
